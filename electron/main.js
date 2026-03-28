@@ -9,6 +9,13 @@ const isDev = !app.isPackaged
 let backendProcess = null
 let mainWindow = null
 
+function getDevStartCommand() {
+  if (process.platform === 'win32') {
+    return 'start_backend.bat 或 start_backend.ps1'
+  }
+  return './start_backend.sh'
+}
+
 function getBackendPath() {
   if (isDev) {
     return null // 开发模式：手动启动 uvicorn
@@ -20,7 +27,7 @@ function getBackendPath() {
 
 function startBackend() {
   if (isDev) {
-    console.log('[dev] 请先在项目根目录运行 start_backend.bat 或 start_backend.ps1')
+    console.log(`[dev] 请先在项目根目录运行 ${getDevStartCommand()}`)
     return
   }
 

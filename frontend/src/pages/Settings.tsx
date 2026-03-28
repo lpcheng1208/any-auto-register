@@ -20,6 +20,7 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: 'DuckMail（自动生成）', value: 'duckmail' },
     { label: 'MoeMail (sall.cc)', value: 'moemail' },
     { label: 'Freemail（自建 CF Worker）', value: 'freemail' },
+    { label: '215 Mail API', value: 'mail215' },
     { label: 'CF Worker（自建域名）', value: 'cfworker' },
   ],
   default_executor: [
@@ -93,6 +94,16 @@ const TAB_ITEMS = [
           { key: 'duckmail_api_url', label: 'Web URL', placeholder: 'https://www.duckmail.sbs' },
           { key: 'duckmail_provider_url', label: 'Provider URL', placeholder: 'https://api.duckmail.sbs' },
           { key: 'duckmail_bearer', label: 'Bearer Token', placeholder: 'kevin273945', secret: true },
+        ],
+      },
+      {
+        title: '215 Mail API',
+        desc: '基于 vip.215.im / maliapi.215.im 的 API Key 临时邮箱服务',
+        fields: [
+          { key: 'mail215_api_url', label: 'API URL', placeholder: 'https://maliapi.215.im/v1' },
+          { key: 'mail215_api_key', label: 'API Key', placeholder: 'AC-...', secret: true },
+          { key: 'mail215_domain', label: '域名（可选）', placeholder: 'public.example.com' },
+          { key: 'mail215_address_prefix', label: '自定义前缀（可选）', placeholder: 'my-prefix' },
         ],
       },
       {

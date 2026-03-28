@@ -7,11 +7,16 @@ BACKEND_DIR="$SCRIPT_DIR/../"
 
 cd "$BACKEND_DIR"
 
-echo "[1/3] 安装 PyInstaller..."
-pip install pyinstaller --quiet
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[ERROR] 未找到 uv，请先安装：https://docs.astral.sh/uv/" >&2
+  exit 1
+fi
+
+echo "[1/3] 同步后端依赖..."
+uv sync
 
 echo "[2/3] 打包后端..."
-pyinstaller --onefile --name backend \
+uv run pyinstaller --onefile --name backend \
   --add-data "platforms:platforms" \
   --add-data "core:core" \
   --add-data "api:api" \

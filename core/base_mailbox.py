@@ -110,6 +110,14 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
             api_url=extra.get("moemail_api_url", "https://sall.cc"),
             proxy=proxy,
         )
+    elif provider == "mail215":
+        return Mail215Mailbox(
+            api_url=extra.get("mail215_api_url", "https://maliapi.215.im/v1"),
+            api_key=extra.get("mail215_api_key", ""),
+            domain=extra.get("mail215_domain", ""),
+            address_prefix=extra.get("mail215_address_prefix", ""),
+            proxy=proxy,
+        )
     elif provider == "cfworker":
         return CFWorkerMailbox(
             api_url=extra.get("cfworker_api_url", ""),
@@ -394,6 +402,141 @@ class DuckMailMailbox(BaseMailbox):
                 pass
             time.sleep(3)
         raise TimeoutError(f"等待验证码超时 ({timeout}s)")
+
+
+class Mail215Mailbox(BaseMailbox):
+    """215 Mail API 临时邮箱（API Key 模式）"""
+
+    def __init__(self, api_url: str = "https://maliapi.215.im/v1",
+                 api_key: str = "", domain: str = "",
+                 address_prefix: str = "", proxy: str = None):
+        self.api = api_url.rstrip("/")
+        self.api_key = api_key
+        self.domain = domain.strip()
+        self.address_prefix = address_prefix.strip()
+        self.proxy = {"http": proxy, "https": proxy} if proxy else None
+        self._session = None
+
+    def _get_session(self):
+        import requests
+        if not self.api_key:
+            raise RuntimeError("215 Mail API Key 未配置，请检查 mail215_api_key")
+        if self._session is None:
+            session = requests.Session()
+            session.proxies = self.proxy
+            session.headers.update({
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            })
+            self._session = session
+        return self._session
+
+    def _message_headers(self, account: MailboxAccount) -> dict:
+        token = str((account.extra or {}).get("token") or "").strip()
+        if token:
+            return {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }
+    def _extract_data(self, response):
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("success", False):
+            raise RuntimeError(payload.get("error") or f"215 Mail API 请求失败: {payload}")
+        return payload.get("data") or {}
+
+    def get_email(self) -> MailboxAccount:
+        session = self._get_session()
+        payload = {}
+        if self.address_prefix:
+            payload["address"] = self.address_prefix
+        if self.domain:
+            payload["domain"] = self.domain
+        data = self._extract_data(session.post(f"{self.api}/accounts", json=payload, timeout=15))
+        email = str(data.get("address") or "").strip()
+        if not email:
+            raise RuntimeError(f"215 Mail API 返回空邮箱: {data}")
+        account_id = str(data.get("id") or email)
+        token = str(data.get("token") or "")
+        return MailboxAccount(email=email, account_id=account_id, extra={"token": token})
+
+    def _list_messages(self, account: MailboxAccount, limit: int = 50) -> list[dict]:
+        import requests
+
+        data = self._extract_data(
+            requests.get(
+                f"{self.api}/messages",
+                params={"address": account.email, "limit": limit},
+                headers=self._message_headers(account),
+                proxies=self.proxy,
+                timeout=10,
+            )
+        )
+        return data.get("messages", []) if isinstance(data, dict) else []
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        try:
+            return {str(msg.get("id")) for msg in self._list_messages(account) if msg.get("id")}
+        except Exception:
+            return set()
+
+    def wait_for_code(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None,
+                      code_pattern: str = None, **kwargs) -> str:
+        import re
+        import requests
+        import time
+
+        seen = set(before_ids or [])
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                for msg in self._list_messages(account, limit=20):
+                    mid = str(msg.get("id") or "")
+                    if not mid or mid in seen:
+                        continue
+                    seen.add(mid)
+                    fallback_body = " ".join([
+                        str(msg.get("subject") or ""),
+                        str(msg.get("text") or ""),
+                        str(msg.get("preview") or ""),
+                    ]).strip()
+                    fallback_body = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '', fallback_body)
+                    if fallback_body and (not keyword or keyword.lower() in fallback_body.lower()):
+                        fallback_code = self._safe_extract(fallback_body, code_pattern)
+                        if fallback_code:
+                            return fallback_code
+                    try:
+                        detail = self._extract_data(
+                            requests.get(
+                                f"{self.api}/messages/{mid}",
+                                params={"address": account.email},
+                                headers=self._message_headers(account),
+                                proxies=self.proxy,
+                                timeout=10,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    html_parts = detail.get("html") or []
+                    html_text = " ".join(str(part) for part in html_parts)
+                    body = " ".join([
+                        str(detail.get("subject") or ""),
+                        str(detail.get("text") or ""),
+                        html_text,
+                    ]).strip()
+                    body = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '', body)
+                    if keyword and keyword.lower() not in body.lower():
+                        continue
+                    code = self._safe_extract(body, code_pattern)
+                    if code:
+                        return code
+            except Exception:
+                pass
+            time.sleep(3)
+        raise TimeoutError(f"等待验证码超时 ({timeout}s)")
+
 
 
 class CFWorkerMailbox(BaseMailbox):

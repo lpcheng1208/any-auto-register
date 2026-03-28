@@ -79,51 +79,49 @@
 
 - Python 3.12+
 - Node.js 18+
-- Conda（推荐）
+- [uv](https://docs.astral.sh/uv/)（推荐）
 
 ## 推荐环境
 
-推荐固定使用 conda 环境名：
+推荐使用 `uv` 管理后端依赖与运行环境。
+
+安装完成后，项目根目录执行：
 
 ```bash
-any-auto-register
+uv sync
 ```
 
-本项目已经提供 Windows 启动脚本：
+后续统一使用：
 
-- `D:\codemodule\ai\any-auto-register\start_backend.bat`
-- `D:\codemodule\ai\any-auto-register\start_backend.ps1`
-- `D:\codemodule\ai\any-auto-register\stop_backend.bat`
-- `D:\codemodule\ai\any-auto-register\stop_backend.ps1`
-
-它们会强制通过 `any-auto-register` 环境启动后端，避免出现：
-
-- 后端能启动，但 Solver 起不来
-- `ModuleNotFoundError: quart`
-- 前端里 Turnstile Solver 一直显示“未运行”
-
-***
+```bash
+uv run python main.py
+```
 
 ## 安装
 
-### 1. 创建 conda 环境
+### 1. 安装 uv
 
 ```bash
-conda create -n any-auto-register python=3.12 -y
-conda activate any-auto-register
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+安装完成后，重启终端，确认：
+
+```bash
+uv --version
 ```
 
 ### 2. 安装后端依赖
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 3. 安装浏览器依赖
 
 ```bash
-python -m playwright install chromium
-python -m camoufox fetch
+uv run python -m playwright install chromium
+uv run python -m camoufox fetch
 ```
 
 ### 4. 安装并构建前端
@@ -138,37 +136,29 @@ cd ..
 构建完成后，前端静态文件会输出到：
 
 ```text
-D:\codemodule\ai\any-auto-register\static
+./static
 ```
 
 ***
 
 ## 启动方式
 
-### Windows 推荐启动方式
+### macOS / Linux 推荐启动方式
 
-#### PowerShell
-
-```powershell
-.\start_backend.ps1
-```
-
-#### CMD
-
-```bat
-start_backend.bat
+```bash
+chmod +x start_backend.sh stop_backend.sh
+./start_backend.sh
 ```
 
 默认会使用：
 
-- conda 环境：`any-auto-register`
 - 服务地址：`http://localhost:8000`
+- uv 虚拟环境：项目自动创建的 `.venv`
 
 ### 手动启动方式
 
 ```bash
-conda activate any-auto-register
-python main.py
+uv run python main.py
 ```
 
 ### 启动后访问
@@ -183,22 +173,11 @@ http://localhost:8000
 
 ### 停止后端
 
-#### PowerShell
-
-```powershell
-.\stop_backend.ps1
+```bash
+./stop_backend.sh
 ```
 
-#### CMD
-
-```bat
-stop_backend.bat
-```
-
-默认会停止：
-
-- 后端端口：`8000`
-- Solver 端口：`8889`
+`stop_backend.sh` 会校验 `.backend.pid` 中记录的 PID 与当前项目后端命令行是否匹配，只停止当前项目通过 `start_backend.sh` 拉起的后端进程，不会按端口扫描并终止其他本地服务。
 
 ***
 
@@ -208,8 +187,8 @@ stop_backend.bat
 
 ### 终端 1：启动后端
 
-```powershell
-.\start_backend.ps1
+```bash
+./start_backend.sh
 ```
 
 ### 终端 2：启动 Vite
@@ -244,13 +223,12 @@ http://localhost:8889
 前端“全局配置 → 验证码 → Turnstile Solver”显示的是 **后端检测结果**，因此：
 
 - 后端没启动 → 前端会显示“未运行”
-- 后端启动了，但不是在正确 conda 环境里 → Solver 可能启动失败
+- 后端启动了，但不是在正确 uv 虚拟环境里 → Solver 可能启动失败
 
 ### 手动启动 Solver
 
 ```bash
-conda activate any-auto-register
-python services/turnstile_solver/start.py --browser_type camoufox --port 8889
+uv run python services/turnstile_solver/start.py --browser_type camoufox --port 8889
 ```
 
 ### Solver 日志
@@ -258,7 +236,7 @@ python services/turnstile_solver/start.py --browser_type camoufox --port 8889
 如果 Solver 启动失败，可查看：
 
 ```text
-D:\codemodule\ai\any-auto-register\services\turnstile_solver\solver.log
+./services/turnstile_solver/solver.log
 ```
 
 ***
@@ -283,31 +261,27 @@ curl http://localhost:8000/api/solver/status
 
 ### 2. 出现 `ModuleNotFoundError: quart`
 
-说明你当前启动后端的 Python 不是 `any-auto-register` 环境。
+说明你当前启动后端的 Python 不在项目的 uv 虚拟环境中。
 
 请改用：
 
-```powershell
-.\start_backend.ps1
+```bash
+./start_backend.sh
 ```
 
 或：
 
-```bat
-start_backend.bat
+```bash
+uv run python main.py
 ```
 
 ### 3. 如何确认当前 Python 是否正确
 
 ```bash
-python -c "import sys; print(sys.executable)"
+uv run python -c "import sys; print(sys.executable)"
 ```
 
-应当类似于：
-
-```text
-D:\miniconda\conda3\envs\any-auto-register\python.exe
-```
+输出路径通常会落在项目目录下的 `.venv/`。
 
 ### 4. Solver 能打开，但状态还是不对
 
@@ -322,17 +296,19 @@ http://localhost:8889/
 
 ### 5. 端口被占用
 
-如果启动时报 `WinError 10048`，先执行：
+如果你是通过 `start_backend.sh` 启动的后端，先执行：
 
-```powershell
-.\stop_backend.ps1
+```bash
+./stop_backend.sh
 ```
 
 然后重新启动：
 
-```powershell
-.\start_backend.ps1
+```bash
+./start_backend.sh
 ```
+
+如果 `8000` 端口上本来就是其他服务，请先手动处理对应进程；当前脚本不会主动按端口清理非本项目进程。
 
 ***
 
@@ -381,7 +357,24 @@ http://localhost:8889/
 | 服务         | 说明                                           |
 | ---------- | -------------------------------------------- |
 | YesCaptcha | 需填写 Client Key                               |
-| 本地 Solver  | 依赖 `camoufox` + `quart`，并要求后端运行在正确 conda 环境中 |
+| 本地 Solver  | 依赖 `camoufox` + `quart`，并要求后端运行在正确 uv 虚拟环境中 |
+
+***
+
+### Electron 后端打包
+
+Electron 后端打包脚本已切换为 uv：
+
+```bash
+cd electron
+./build-backend.sh
+```
+
+该脚本会执行 `uv sync`，再通过 `uv run pyinstaller` 产出可执行文件。
+
+### Docker
+
+Docker 运行链路也已切换到 uv：镜像构建阶段使用 `pyproject.toml + uv.lock` 执行 `uv sync --frozen`，容器启动时通过 `uv run uvicorn` 启动后端。
 
 ***
 
@@ -390,10 +383,9 @@ http://localhost:8889/
 ```text
 any-auto-register/
 ├── main.py
-├── start_backend.bat
-├── start_backend.ps1
-├── stop_backend.bat
-├── stop_backend.ps1
+├── pyproject.toml
+├── start_backend.sh
+├── stop_backend.sh
 ├── api/
 ├── core/
 ├── services/
@@ -409,13 +401,10 @@ any-auto-register/
 
 Electron 开发模式不会自动启动 Python 后端。
 
-请先在项目根目录启动：
+- macOS / Linux：先运行 `./start_backend.sh`
+- Windows：先运行 `start_backend.bat` 或 `start_backend.ps1`
 
-```powershell
-.\start_backend.ps1
-```
-
-然后再运行 Electron。
+Electron 打包模式使用的是打包后的 backend 可执行文件，不依赖项目目录下的 `.venv`。
 
 ***
 

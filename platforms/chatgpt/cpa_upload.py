@@ -84,9 +84,11 @@ def upload_to_cpa(
     if not api_url:
         api_url = _get_config_value("cpa_api_url")
     if not api_key:
-        api_key = _get_config_value("cpa_api_key")
+        api_key = _get_config_value("cliproxyapi_management_key") or _get_config_value("cpa_api_key")
     if not api_url:
         return False, "CPA API URL 未配置"
+    if not api_key:
+        return False, "CPA 管理密钥未配置"
 
     upload_url = f"{api_url.rstrip('/')}/v0/management/auth-files"
 
@@ -94,7 +96,7 @@ def upload_to_cpa(
     file_content = json.dumps(token_data, ensure_ascii=False, indent=2).encode("utf-8")
 
     headers = {
-        "Authorization": f"Bearer {api_key or ''}",
+        "Authorization": f"Bearer {api_key}",
     }
 
     mime = None
@@ -124,7 +126,7 @@ def upload_to_cpa(
         try:
             error_detail = response.json()
             if isinstance(error_detail, dict):
-                error_msg = error_detail.get("message", error_msg)
+                error_msg = error_detail.get("message") or error_detail.get("error") or error_msg
         except Exception:
             error_msg = f"{error_msg} - {response.text[:200]}"
         return False, error_msg

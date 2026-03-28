@@ -134,3 +134,43 @@ def upload_cpa(account_id: int, req: CpaUploadReq,
     token_data = generate_token_json(codex_acc)
     ok, msg = upload_to_cpa(token_data, api_url=req.api_url, api_key=req.api_key)
     return {"ok": ok, "message": msg}
+
+
+class CpaBatchUploadReq(BaseModel):
+    account_ids: list[int]
+
+
+@router.post("/batch-upload-cpa")
+def batch_upload_cpa(req: CpaBatchUploadReq,
+                     session: Session = Depends(get_session)):
+    if not req.account_ids:
+        raise HTTPException(400, "账号 ID 列表不能为空")
+
+    unique_ids = list(dict.fromkeys(req.account_ids))
+    results = []
+    success = 0
+
+    from platforms.chatgpt.cpa_upload import upload_to_cpa, generate_token_json
+
+    for account_id in unique_ids:
+        try:
+            acc = _get_account(account_id, session)
+            codex_acc = _to_codex_account(acc)
+            token_data = generate_token_json(codex_acc)
+            ok, msg = upload_to_cpa(token_data)
+            results.append({"id": account_id, "email": acc.email, "ok": ok, "message": msg})
+            if ok:
+                success += 1
+        except HTTPException as e:
+            results.append({"id": account_id, "email": "", "ok": False, "message": e.detail})
+        except Exception as e:
+            results.append({"id": account_id, "email": "", "ok": False, "message": str(e)})
+
+    return {
+        "total": len(unique_ids),
+        "success": success,
+        "failed": len(unique_ids) - success,
+        "items": results,
+    }
+
+

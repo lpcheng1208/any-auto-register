@@ -25,6 +25,7 @@ import {
   UploadOutlined,
   MoreOutlined,
   DeleteOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import { apiFetch, API_BASE } from '@/lib/utils'
 import { normalizeExecutorForPlatform } from '@/lib/registerOptions'
@@ -185,6 +186,7 @@ export default function Accounts() {
   const [importLoading, setImportLoading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [registerLoading, setRegisterLoading] = useState(false)
+  const [syncCpaLoading, setSyncCpaLoading] = useState(false)
 
   useEffect(() => {
     if (platform) setCurrentPlatform(platform)
@@ -240,6 +242,36 @@ export default function Accounts() {
     message.success('批量删除成功')
     setSelectedRowKeys([])
     load()
+  }
+
+  const handleBatchSyncCpa = async () => {
+    if (selectedRowKeys.length === 0) return
+    setSyncCpaLoading(true)
+    try {
+      const result = await apiFetch('/chatgpt/batch-upload-cpa', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: Array.from(selectedRowKeys) }),
+      })
+      if (result.failed > 0) {
+        Modal.info({
+          title: `同步完成：成功 ${result.success} / ${result.total}`,
+          width: 720,
+          content: (
+            <div style={{ maxHeight: 360, overflow: 'auto' }}>
+              {(result.items || []).map((item: any) => (
+                <div key={item.id} style={{ marginBottom: 8, color: item.ok ? '#10b981' : '#ef4444' }}>
+                  {item.email || `账号 ${item.id}`}: {item.message}
+                </div>
+              ))}
+            </div>
+          ),
+        })
+      } else {
+        message.success(`同步完成：成功 ${result.success} / ${result.total}`)
+      }
+    } finally {
+      setSyncCpaLoading(false)
+    }
   }
 
   const handleAdd = async () => {
@@ -306,6 +338,10 @@ export default function Accounts() {
             freemail_admin_token: cfg.freemail_admin_token,
             freemail_username: cfg.freemail_username,
             freemail_password: cfg.freemail_password,
+            mail215_api_url: cfg.mail215_api_url,
+            mail215_api_key: cfg.mail215_api_key,
+            mail215_domain: cfg.mail215_domain,
+            mail215_address_prefix: cfg.mail215_address_prefix,
             cfworker_api_url: cfg.cfworker_api_url,
             cfworker_admin_token: cfg.cfworker_admin_token,
             cfworker_domain: cfg.cfworker_domain,
@@ -436,6 +472,16 @@ export default function Accounts() {
             <Popconfirm title={`确认删除选中的 ${selectedRowKeys.length} 个账号？`} onConfirm={handleBatchDelete}>
               <Button danger icon={<DeleteOutlined />}>删除 {selectedRowKeys.length} 个</Button>
             </Popconfirm>
+          )}
+          {currentPlatform === 'chatgpt' && (
+            <Button
+              icon={<SyncOutlined />}
+              onClick={handleBatchSyncCpa}
+              disabled={selectedRowKeys.length === 0}
+              loading={syncCpaLoading}
+            >
+              同步到 CPA
+            </Button>
           )}
           <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>导入</Button>
           <Button icon={<DownloadOutlined />} onClick={exportCsv} disabled={accounts.length === 0}>导出</Button>

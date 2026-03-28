@@ -17,26 +17,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb x11vnc \
     # noVNC 依赖
     novnc websockify \
-    # 其他
+    # uv + 其他
     curl ca-certificates fonts-liberation libnss3 libatk-bridge2.0-0 \
     libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 \
     libasound2 libpango-1.0-0 libcairo2 libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 WORKDIR /app
 
 # 安装 Python 依赖
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # 安装 Playwright 浏览器
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN playwright install chromium --with-deps || true
+RUN uv run playwright install chromium --with-deps || true
 
 # 复制后端代码
 COPY . .
-# 不需要 .venv 和 frontend 源码
-RUN rm -rf .venv frontend
+# 不需要 frontend 源码
+RUN rm -rf frontend
 
 # 复制前端构建产物
 COPY --from=frontend-builder /app/static ./static

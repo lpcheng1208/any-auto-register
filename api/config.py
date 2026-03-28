@@ -12,6 +12,7 @@ CONFIG_KEYS = [
     "freemail_api_url", "freemail_admin_token", "freemail_username", "freemail_password",
     "moemail_api_url",
     "mail_provider",
+    "mail215_api_url", "mail215_api_key", "mail215_domain", "mail215_address_prefix",
     "cfworker_api_url", "cfworker_admin_token", "cfworker_domain", "cfworker_fingerprint",
     "cpa_api_url", "cpa_api_key",
     "team_manager_url", "team_manager_key",

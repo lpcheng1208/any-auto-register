@@ -46,6 +46,10 @@ export default function Register() {
         freemail_admin_token: cfg.freemail_admin_token || '',
         freemail_username: cfg.freemail_username || '',
         freemail_password: cfg.freemail_password || '',
+        mail215_api_url: cfg.mail215_api_url || 'https://maliapi.215.im/v1',
+        mail215_api_key: cfg.mail215_api_key || '',
+        mail215_domain: cfg.mail215_domain || '',
+        mail215_address_prefix: cfg.mail215_address_prefix || '',
         cfworker_api_url: cfg.cfworker_api_url || '',
         cfworker_admin_token: cfg.cfworker_admin_token || '',
         cfworker_domain: cfg.cfworker_domain || '',
@@ -80,6 +84,10 @@ export default function Register() {
           freemail_admin_token: values.freemail_admin_token,
           freemail_username: values.freemail_username,
           freemail_password: values.freemail_password,
+          mail215_api_url: values.mail215_api_url,
+          mail215_api_key: values.mail215_api_key,
+          mail215_domain: values.mail215_domain,
+          mail215_address_prefix: values.mail215_address_prefix,
           cfworker_api_url: values.cfworker_api_url,
           cfworker_admin_token: values.cfworker_admin_token,
           cfworker_domain: values.cfworker_domain,
@@ -183,6 +191,7 @@ export default function Register() {
                 { value: 'tempmail_lol', label: 'TempMail.lol' },
                 { value: 'duckmail', label: 'DuckMail' },
                 { value: 'freemail', label: 'Freemail' },
+                { value: 'mail215', label: '215 Mail API' },
                 { value: 'laoudo', label: 'Laoudo' },
                 { value: 'cfworker', label: 'CF Worker' },
               ]}
@@ -198,6 +207,22 @@ export default function Register() {
               </Form.Item>
               <Form.Item name="laoudo_auth" label="JWT Token">
                 <Input placeholder="eyJ..." />
+              </Form.Item>
+            </>
+          )}
+          {mailProvider === 'mail215' && (
+            <>
+              <Form.Item name="mail215_api_url" label="API URL">
+                <Input placeholder="https://maliapi.215.im/v1" />
+              </Form.Item>
+              <Form.Item name="mail215_api_key" label="API Key" rules={[{ required: true, message: '请输入 215 API Key' }]}>
+                <Input placeholder="AC-..." />
+              </Form.Item>
+              <Form.Item name="mail215_domain" label="域名 (可选)">
+                <Input placeholder="public.example.com" />
+              </Form.Item>
+              <Form.Item name="mail215_address_prefix" label="自定义前缀 (可选)">
+                <Input placeholder="my-prefix" />
               </Form.Item>
             </>
           )}

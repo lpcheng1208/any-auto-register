@@ -15,35 +15,46 @@ from api.proxies import router as proxies_router
 from api.config import router as config_router
 from api.actions import router as actions_router
 from api.integrations import router as integrations_router
+from api.chatgpt import router as chatgpt_router
 
-EXPECTED_CONDA_ENV = os.getenv("APP_CONDA_ENV", "any-auto-register")
+EXPECTED_RUNTIME = os.getenv("APP_RUNTIME_HINT", "uv run")
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_VENV_PATH = os.path.join(PROJECT_ROOT, ".venv")
 
 
-def _detect_conda_env() -> str:
-    conda_env = os.getenv("CONDA_DEFAULT_ENV")
-    if conda_env:
-        return conda_env
+def _detect_virtual_env() -> str:
+    virtual_env = os.getenv("VIRTUAL_ENV")
+    if virtual_env:
+        return os.path.basename(virtual_env)
 
-    prefix_parts = os.path.normpath(sys.prefix).split(os.sep)
-    if "envs" in prefix_parts:
-        idx = prefix_parts.index("envs")
-        if idx + 1 < len(prefix_parts):
-            return prefix_parts[idx + 1]
+    if sys.prefix != sys.base_prefix:
+        return os.path.basename(sys.prefix)
     return ""
 
 
+def _is_expected_runtime() -> bool:
+    prefix = os.path.normpath(sys.prefix)
+    expected_prefix = os.path.normpath(PROJECT_VENV_PATH)
+    return prefix == expected_prefix
+
+
 def _print_runtime_info() -> None:
-    current_env = _detect_conda_env()
+    current_env = _detect_virtual_env()
     print(f"[Runtime] Python: {sys.executable}")
-    print(f"[Runtime] Conda Env: {current_env or '未检测到'}")
-    if current_env and current_env != EXPECTED_CONDA_ENV:
+    print(f"[Runtime] Virtual Env: {current_env or '未检测到'}")
+    if IS_FROZEN:
+        print("[Runtime] Packaged backend detected")
+        return
+    if not current_env:
         print(
-            f"[WARN] 当前环境为 '{current_env}'，推荐使用 '{EXPECTED_CONDA_ENV}' 启动，"
+            f"[WARN] 未检测到虚拟环境，推荐通过 '{EXPECTED_RUNTIME} python main.py' 启动，"
             "否则 Turnstile Solver 可能因依赖缺失而无法启动。"
         )
-    elif not current_env:
+        return
+    if not _is_expected_runtime():
         print(
-            f"[WARN] 未检测到 conda 环境，推荐使用 '{EXPECTED_CONDA_ENV}' 启动，"
+            f"[WARN] 当前虚拟环境为 '{current_env}'，推荐使用项目环境 '{PROJECT_VENV_PATH}' 启动，"
             "否则 Turnstile Solver 可能因依赖缺失而无法启动。"
         )
 
@@ -83,6 +94,7 @@ app.include_router(proxies_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(actions_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
+app.include_router(chatgpt_router, prefix="/api")
 
 
 @app.get("/api/solver/status")

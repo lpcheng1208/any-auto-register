@@ -8,7 +8,7 @@ import json
 def _utcnow():
     return datetime.now(timezone.utc)
 
-DATABASE_URL = "sqlite:///account_manager.db"
+DATABASE_URL = "sqlite:///data/account_manager.db"
 engine = create_engine(DATABASE_URL)
 
 
