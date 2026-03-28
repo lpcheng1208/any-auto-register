@@ -181,11 +181,17 @@ def batch_delete_accounts(
 
 
 @router.post("/check-all")
-def check_all_accounts(platform: Optional[str] = None,
-                       background_tasks: BackgroundTasks = None):
-    from core.scheduler import scheduler
-    background_tasks.add_task(scheduler.check_accounts_valid, platform)
-    return {"message": "批量检测任务已启动"}
+def check_all_accounts(
+    platform: Optional[str] = None,
+    limit: int = 50,
+    background_tasks: BackgroundTasks = None,
+):
+    from api.tasks import AccountCheckTaskRequest, start_account_check_task
+
+    return start_account_check_task(
+        AccountCheckTaskRequest(platform=platform, limit=limit),
+        background_tasks=background_tasks,
+    )
 
 
 @router.get("/{account_id}")
@@ -231,8 +237,13 @@ def check_account(account_id: int, background_tasks: BackgroundTasks,
     acc = session.get(AccountModel, account_id)
     if not acc:
         raise HTTPException(404, "账号不存在")
-    background_tasks.add_task(_do_check, account_id)
-    return {"message": "检测任务已启动"}
+
+    from api.tasks import AccountCheckTaskRequest, start_account_check_task
+
+    return start_account_check_task(
+        AccountCheckTaskRequest(platform=acc.platform, account_ids=[account_id], limit=1),
+        background_tasks=background_tasks,
+    )
 
 
 def _do_check(account_id: int):

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Card, Form, Input, Select, Button, message, Tabs, Space, Tag, Typography, Modal } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Card, Form, Input, Select, Button, message, Tabs, Space, Tag, Typography, Modal, Switch, Table, InputNumber, Popconfirm } from 'antd'
 import {
   SaveOutlined,
   EyeOutlined,
@@ -10,8 +10,12 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   SyncOutlined,
+  ClockCircleOutlined,
+  PlusOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons'
 import { apiFetch } from '@/lib/utils'
+import { getExecutorOptions, normalizeExecutorForPlatform } from '@/lib/registerOptions'
 
 const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   mail_provider: [
@@ -35,6 +39,20 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   ],
 }
 
+const PLATFORM_OPTIONS = [
+  { value: 'trae', label: 'Trae.ai' },
+  { value: 'cursor', label: 'Cursor' },
+  { value: 'kiro', label: 'Kiro' },
+  { value: 'grok', label: 'Grok' },
+  { value: 'chatgpt', label: 'ChatGPT' },
+  { value: 'openblocklabs', label: 'OpenBlockLabs' },
+]
+
+const INTERVAL_UNIT_OPTIONS = [
+  { value: 'minutes', label: '分钟' },
+  { value: 'hours', label: '小时' },
+]
+
 const TAB_ITEMS = [
   {
     key: 'register',
@@ -44,9 +62,18 @@ const TAB_ITEMS = [
       {
         title: '默认注册方式',
         desc: '控制注册任务如何执行',
-        fields: [{ key: 'default_executor', label: '执行器类型', type: 'select' }],
+        fields: [
+          { key: 'default_executor', label: '执行器类型', type: 'select' },
+          { key: 'default_target_count', label: '目标数量', placeholder: '例如 10', type: 'number' },
+        ],
       },
     ],
+  },
+  {
+    key: 'scheduled-register',
+    label: '定时注册',
+    icon: <ClockCircleOutlined />,
+    sections: [],
   },
   {
     key: 'mailbox',
@@ -222,7 +249,7 @@ interface FieldConfig {
   key: string
   label: string
   placeholder?: string
-  type?: 'select' | 'input'
+  type?: 'select' | 'input' | 'number'
   secret?: boolean
 }
 
@@ -239,12 +266,124 @@ interface TabConfig {
   sections: SectionConfig[]
 }
 
+interface PlatformResponseItem {
+  name: string
+  display_name?: string
+}
+
+interface ScheduledRegisterTaskItem {
+  id: number
+  name: string
+  enabled: boolean
+  platform: string
+  interval_minutes: number
+  register: Record<string, any>
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_task_id: string
+  last_status: string
+  last_error: string
+  created_at: string
+  updated_at: string
+}
+
+const COUNT_MODE_OPTIONS = [
+  { value: 'fixed', label: '固定数量' },
+  { value: 'dynamic', label: '动态补量' },
+]
+
+interface ScheduledRegisterListResponse {
+  items: ScheduledRegisterTaskItem[]
+}
+
 function formatResultText(data: unknown) {
   if (typeof data === 'string') return data
   try {
     return JSON.stringify(data, null, 2)
   } catch {
     return String(data)
+  }
+}
+
+function buildRegisterPayload(values: Record<string, any>) {
+  return {
+    platform: values.platform,
+    email: values.email || null,
+    password: values.password || null,
+    count: values.count || 1,
+    count_mode: values.count_mode || 'fixed',
+    concurrency: values.concurrency || 1,
+    register_delay_seconds: values.register_delay_seconds || 0,
+    proxy: values.proxy || null,
+    executor_type: values.executor_type,
+    captcha_solver: values.captcha_solver,
+    extra: {
+      mail_provider: values.mail_provider,
+      laoudo_auth: values.laoudo_auth,
+      laoudo_email: values.laoudo_email,
+      laoudo_account_id: values.laoudo_account_id,
+      moemail_api_url: values.moemail_api_url,
+      duckmail_api_url: values.duckmail_api_url,
+      duckmail_provider_url: values.duckmail_provider_url,
+      duckmail_bearer: values.duckmail_bearer,
+      freemail_api_url: values.freemail_api_url,
+      freemail_admin_token: values.freemail_admin_token,
+      freemail_username: values.freemail_username,
+      freemail_password: values.freemail_password,
+      mail215_api_url: values.mail215_api_url,
+      mail215_api_key: values.mail215_api_key,
+      mail215_domain: values.mail215_domain,
+      mail215_address_prefix: values.mail215_address_prefix,
+      cfworker_api_url: values.cfworker_api_url,
+      cfworker_admin_token: values.cfworker_admin_token,
+      cfworker_domain: values.cfworker_domain,
+      cfworker_fingerprint: values.cfworker_fingerprint,
+      yescaptcha_key: values.yescaptcha_key,
+      solver_url: values.solver_url,
+    },
+  }
+}
+
+function fillScheduleFormFromTask(item: ScheduledRegisterTaskItem) {
+  const register = item.register || {}
+  const extra = register.extra || {}
+  return {
+    name: item.name,
+    enabled: item.enabled,
+    interval_unit: item.interval_minutes % 60 === 0 ? 'hours' : 'minutes',
+    interval_value: item.interval_minutes % 60 === 0 ? item.interval_minutes / 60 : item.interval_minutes,
+    platform: register.platform || item.platform,
+    email: register.email || '',
+    password: register.password || '',
+    count: register.count || 1,
+    count_mode: register.count_mode || 'fixed',
+    concurrency: register.concurrency || 1,
+    register_delay_seconds: register.register_delay_seconds || 0,
+    proxy: register.proxy || '',
+    executor_type: register.executor_type || 'protocol',
+    captcha_solver: register.captcha_solver || 'manual',
+    mail_provider: extra.mail_provider || 'moemail',
+    laoudo_auth: extra.laoudo_auth || '',
+    laoudo_email: extra.laoudo_email || '',
+    laoudo_account_id: extra.laoudo_account_id || '',
+    moemail_api_url: extra.moemail_api_url || '',
+    duckmail_api_url: extra.duckmail_api_url || '',
+    duckmail_provider_url: extra.duckmail_provider_url || '',
+    duckmail_bearer: extra.duckmail_bearer || '',
+    freemail_api_url: extra.freemail_api_url || '',
+    freemail_admin_token: extra.freemail_admin_token || '',
+    freemail_username: extra.freemail_username || '',
+    freemail_password: extra.freemail_password || '',
+    mail215_api_url: extra.mail215_api_url || 'https://maliapi.215.im/v1',
+    mail215_api_key: extra.mail215_api_key || '',
+    mail215_domain: extra.mail215_domain || '',
+    mail215_address_prefix: extra.mail215_address_prefix || '',
+    cfworker_api_url: extra.cfworker_api_url || '',
+    cfworker_admin_token: extra.cfworker_admin_token || '',
+    cfworker_domain: extra.cfworker_domain || '',
+    cfworker_fingerprint: extra.cfworker_fingerprint || '',
+    yescaptcha_key: extra.yescaptcha_key || '',
+    solver_url: extra.solver_url || 'http://localhost:8889',
   }
 }
 
@@ -260,6 +399,8 @@ function ConfigField({ field }: { field: FieldConfig }) {
     <Form.Item label={field.label} name={field.key} extra={helpText}>
       {options ? (
         <Select options={options} style={{ width: '100%' }} />
+      ) : field.type === 'number' ? (
+        <InputNumber min={1} style={{ width: '100%' }} placeholder={field.placeholder} />
       ) : field.secret ? (
         <Input.Password
           placeholder={field.placeholder}
@@ -283,6 +424,316 @@ function ConfigSection({ section }: { section: SectionConfig }) {
         <ConfigField key={field.key} field={field} />
       ))}
     </Card>
+  )
+}
+
+function ScheduledRegisterPanel({ configValues }: { configValues: Record<string, any> }) {
+  const [form] = Form.useForm()
+  const [items, setItems] = useState<ScheduledRegisterTaskItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editingItem, setEditingItem] = useState<ScheduledRegisterTaskItem | null>(null)
+  const [platformOptions, setPlatformOptions] = useState(PLATFORM_OPTIONS)
+  const mailProvider = Form.useWatch('mail_provider', form)
+  const captchaSolver = Form.useWatch('captcha_solver', form)
+  const countMode = Form.useWatch('count_mode', form)
+  const platform = Form.useWatch('platform', form)
+  const executorOptions = useMemo(() => getExecutorOptions(platform), [platform])
+
+  const loadPlatforms = async () => {
+    try {
+      const data = await apiFetch('/platforms') as PlatformResponseItem[]
+      const nextOptions = data
+        .filter((item) => item.name !== 'tavily')
+        .map((item) => ({ value: item.name, label: item.display_name || item.name }))
+      if (nextOptions.length > 0) {
+        setPlatformOptions(nextOptions)
+      }
+    } catch {
+      setPlatformOptions(PLATFORM_OPTIONS)
+    }
+  }
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const data = await apiFetch('/tasks/schedules') as ScheduledRegisterListResponse
+      setItems(data.items || [])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    loadPlatforms()
+  }, [])
+
+  useEffect(() => {
+    const currentExecutor = form.getFieldValue('executor_type')
+    const normalizedExecutor = normalizeExecutorForPlatform(platform, currentExecutor)
+    if (currentExecutor !== normalizedExecutor) {
+      form.setFieldValue('executor_type', normalizedExecutor)
+    }
+  }, [form, platform])
+
+  const openCreate = () => {
+    setEditingItem(null)
+    const defaultPlatform = platformOptions[0]?.value || 'trae'
+    form.setFieldsValue({
+      name: '',
+      enabled: true,
+      interval_unit: 'hours',
+      interval_value: 1,
+      platform: defaultPlatform,
+      email: '',
+      password: '',
+      count: Number(configValues.default_target_count || 1),
+      count_mode: 'fixed',
+      concurrency: 1,
+      register_delay_seconds: 0,
+      proxy: '',
+      executor_type: normalizeExecutorForPlatform(defaultPlatform, configValues.default_executor),
+      captcha_solver: configValues.default_captcha_solver || 'manual',
+      mail_provider: configValues.mail_provider || 'moemail',
+      yescaptcha_key: configValues.yescaptcha_key || '',
+      moemail_api_url: configValues.moemail_api_url || '',
+      laoudo_auth: configValues.laoudo_auth || '',
+      laoudo_email: configValues.laoudo_email || '',
+      laoudo_account_id: configValues.laoudo_account_id || '',
+      duckmail_api_url: configValues.duckmail_api_url || '',
+      duckmail_provider_url: configValues.duckmail_provider_url || '',
+      duckmail_bearer: configValues.duckmail_bearer || '',
+      freemail_api_url: configValues.freemail_api_url || '',
+      freemail_admin_token: configValues.freemail_admin_token || '',
+      freemail_username: configValues.freemail_username || '',
+      freemail_password: configValues.freemail_password || '',
+      mail215_api_url: configValues.mail215_api_url || 'https://maliapi.215.im/v1',
+      mail215_api_key: configValues.mail215_api_key || '',
+      mail215_domain: configValues.mail215_domain || '',
+      mail215_address_prefix: configValues.mail215_address_prefix || '',
+      cfworker_api_url: configValues.cfworker_api_url || '',
+      cfworker_admin_token: configValues.cfworker_admin_token || '',
+      cfworker_domain: configValues.cfworker_domain || '',
+      cfworker_fingerprint: configValues.cfworker_fingerprint || '',
+      solver_url: 'http://localhost:8889',
+    })
+    setOpen(true)
+  }
+
+  const openEdit = (item: ScheduledRegisterTaskItem) => {
+    setEditingItem(item)
+    form.setFieldsValue(fillScheduleFormFromTask(item))
+    setOpen(true)
+  }
+
+  const handleSave = async () => {
+    const values = await form.validateFields()
+    setSaving(true)
+    try {
+      const payload = {
+        name: values.name,
+        enabled: values.enabled,
+        interval_unit: values.interval_unit,
+        interval_value: values.interval_value,
+        register: buildRegisterPayload(values),
+      }
+      if (editingItem) {
+        await apiFetch(`/tasks/schedules/${editingItem.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        })
+        message.success('定时任务已更新')
+      } else {
+        await apiFetch('/tasks/schedules', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+        message.success('定时任务已创建')
+      }
+      setOpen(false)
+      await load()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRunNow = async (item: ScheduledRegisterTaskItem) => {
+    const result = await apiFetch(`/tasks/schedules/${item.id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ inherit_payload: true }),
+    })
+    message.success(`已创建任务 ${result.task_id}`)
+    await load()
+  }
+
+  const handleToggle = async (item: ScheduledRegisterTaskItem) => {
+    const values = fillScheduleFormFromTask(item)
+    await apiFetch(`/tasks/schedules/${item.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: values.name,
+        enabled: !item.enabled,
+        interval_unit: values.interval_unit,
+        interval_value: values.interval_value,
+        register: buildRegisterPayload(values),
+      }),
+    })
+    message.success(item.enabled ? '已停用' : '已启用')
+    await load()
+  }
+
+  const handleDelete = async (item: ScheduledRegisterTaskItem) => {
+    await apiFetch(`/tasks/schedules/${item.id}`, { method: 'DELETE' })
+    message.success('已删除定时任务')
+    await load()
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card title="定时注册任务" extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增任务</Button>}>
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={items}
+          pagination={{ pageSize: 10, showSizeChanger: false }}
+          columns={[
+            { title: '名称', dataIndex: 'name', key: 'name' },
+            { title: '平台', dataIndex: 'platform', key: 'platform', render: (value: string) => <Tag>{value}</Tag> },
+            { title: '间隔', key: 'interval', render: (_, record: ScheduledRegisterTaskItem) => `${record.interval_minutes} 分钟` },
+            { title: '状态', key: 'enabled', render: (_, record: ScheduledRegisterTaskItem) => <Tag color={record.enabled ? 'success' : 'default'}>{record.enabled ? '已启用' : '已停用'}</Tag> },
+            { title: '下次执行', dataIndex: 'next_run_at', key: 'next_run_at', render: (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN') : '-' },
+            { title: '最近执行', dataIndex: 'last_run_at', key: 'last_run_at', render: (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN') : '-' },
+            { title: '最近结果', key: 'last_status', render: (_, record: ScheduledRegisterTaskItem) => (
+              <Space direction="vertical" size={0}>
+                <Tag color={record.last_status === 'running' ? 'processing' : record.last_status === 'failed' ? 'error' : record.last_status === 'success' ? 'success' : 'default'}>{record.last_status || 'idle'}</Tag>
+                {record.last_error ? <Typography.Text type="danger">{record.last_error}</Typography.Text> : null}
+              </Space>
+            ) },
+            {
+              title: '操作',
+              key: 'actions',
+              render: (_, record: ScheduledRegisterTaskItem) => (
+                <Space wrap>
+                  <Button type="link" size="small" onClick={() => openEdit(record)}>编辑</Button>
+                  <Button type="link" size="small" onClick={() => handleToggle(record)}>{record.enabled ? '停用' : '启用'}</Button>
+                  <Button type="link" size="small" icon={<PlayCircleOutlined />} onClick={() => handleRunNow(record)}>立即执行</Button>
+                  <Popconfirm title="确认删除该定时任务？" onConfirm={() => handleDelete(record)}>
+                    <Button type="link" size="small" danger>删除</Button>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      <Modal
+        open={open}
+        title={editingItem ? '编辑定时注册任务' : '新增定时注册任务'}
+        onCancel={() => setOpen(false)}
+        onOk={handleSave}
+        confirmLoading={saving}
+        width={900}
+      >
+        <Form form={form} layout="vertical">
+          <Card title="调度配置" style={{ marginBottom: 16 }}>
+            <Space style={{ width: '100%' }} align="start">
+              <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]} style={{ flex: 2 }}>
+                <Input placeholder="例如：每小时注册 Trae 账号" />
+              </Form.Item>
+              <Form.Item name="enabled" label="启用" valuePropName="checked" style={{ flex: 1 }}>
+                <Switch checkedChildren="启用" unCheckedChildren="停用" />
+              </Form.Item>
+            </Space>
+            <Space style={{ width: '100%' }} align="start">
+              <Form.Item name="interval_value" label="间隔值" rules={[{ required: true, message: '请输入间隔值' }]} style={{ flex: 1 }}>
+                <InputNumber min={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="interval_unit" label="间隔单位" rules={[{ required: true }]} style={{ flex: 1 }}>
+                <Select options={INTERVAL_UNIT_OPTIONS} />
+              </Form.Item>
+            </Space>
+          </Card>
+
+          <Card title="注册配置" style={{ marginBottom: 16 }}>
+            <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
+              <Select options={platformOptions} />
+            </Form.Item>
+            <Form.Item name="executor_type" label="执行器" rules={[{ required: true }]}>
+              <Select options={executorOptions} />
+            </Form.Item>
+            <Form.Item name="captcha_solver" label="验证码" rules={[{ required: true }]}>
+              <Select options={SELECT_FIELDS.default_captcha_solver} />
+            </Form.Item>
+            <Space style={{ width: '100%' }}>
+              <Form.Item name="count_mode" label="数量模式" style={{ flex: 1 }}>
+                <Select options={COUNT_MODE_OPTIONS} />
+              </Form.Item>
+              <Form.Item
+                name="count"
+                label={countMode === 'dynamic' ? '目标账号数' : '批量数量'}
+                extra={countMode === 'dynamic' ? '占位逻辑：按当前有效账号数补足缺口。' : undefined}
+                style={{ flex: 1 }}
+              >
+                <InputNumber min={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="concurrency" label="并发数" style={{ flex: 1 }}>
+                <InputNumber min={1} max={5} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="register_delay_seconds" label="每个注册延迟(秒)" style={{ flex: 1 }}>
+                <InputNumber min={0} precision={1} step={0.5} style={{ width: '100%' }} />
+              </Form.Item>
+            </Space>
+            <Form.Item name="proxy" label="代理 (可选)">
+              <Input placeholder="http://user:pass@host:port" />
+            </Form.Item>
+          </Card>
+
+          <Card title="邮箱配置" style={{ marginBottom: 16 }}>
+            <Form.Item name="mail_provider" label="邮箱服务" rules={[{ required: true }]}>
+              <Select options={SELECT_FIELDS.mail_provider} />
+            </Form.Item>
+            {mailProvider === 'laoudo' && (
+              <>
+                <Form.Item name="laoudo_email" label="邮箱地址"><Input placeholder="xxx@laoudo.com" /></Form.Item>
+                <Form.Item name="laoudo_account_id" label="Account ID"><Input placeholder="563" /></Form.Item>
+                <Form.Item name="laoudo_auth" label="JWT Token"><Input.Password placeholder="eyJ..." /></Form.Item>
+              </>
+            )}
+            {mailProvider === 'mail215' && (
+              <>
+                <Form.Item name="mail215_api_url" label="API URL"><Input placeholder="https://maliapi.215.im/v1" /></Form.Item>
+                <Form.Item name="mail215_api_key" label="API Key"><Input.Password placeholder="AC-..." /></Form.Item>
+                <Form.Item name="mail215_domain" label="域名 (可选)"><Input placeholder="public.example.com" /></Form.Item>
+                <Form.Item name="mail215_address_prefix" label="自定义前缀 (可选)"><Input placeholder="my-prefix" /></Form.Item>
+              </>
+            )}
+            {mailProvider === 'cfworker' && (
+              <>
+                <Form.Item name="cfworker_api_url" label="API URL"><Input placeholder="https://apimail.example.com" /></Form.Item>
+                <Form.Item name="cfworker_admin_token" label="Admin Token"><Input.Password placeholder="abc123" /></Form.Item>
+                <Form.Item name="cfworker_domain" label="域名"><Input placeholder="example.com" /></Form.Item>
+                <Form.Item name="cfworker_fingerprint" label="Fingerprint (可选)"><Input placeholder="cfb82279f..." /></Form.Item>
+              </>
+            )}
+          </Card>
+
+          {captchaSolver === 'yescaptcha' && (
+            <Card title="验证码配置" style={{ marginBottom: 16 }}>
+              <Form.Item name="yescaptcha_key" label="YesCaptcha Key"><Input.Password /></Form.Item>
+            </Card>
+          )}
+
+          {captchaSolver === 'local_solver' && (
+            <Card title="本地 Solver 配置" style={{ marginBottom: 16 }}>
+              <Form.Item name="solver_url" label="Solver URL"><Input /></Form.Item>
+            </Card>
+          )}
+        </Form>
+      </Modal>
+    </div>
   )
 }
 
@@ -530,10 +981,14 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeTab, setActiveTab] = useState('register')
+  const [configValues, setConfigValues] = useState<Record<string, any>>({})
 
   useEffect(() => {
-    apiFetch('/config').then(form.setFieldsValue)
-  }, [])
+    apiFetch('/config').then((data) => {
+      form.setFieldsValue(data)
+      setConfigValues(data || {})
+    })
+  }, [form])
 
   const save = async () => {
     setSaving(true)
@@ -541,6 +996,7 @@ export default function Settings() {
       const values = form.getFieldsValue()
       await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: values }) })
       message.success('保存成功')
+      setConfigValues(values)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } finally {
@@ -578,6 +1034,8 @@ export default function Settings() {
         <div style={{ flex: 1 }}>
           {activeTab === 'integrations' ? (
             <IntegrationsPanel />
+          ) : activeTab === 'scheduled-register' ? (
+            <ScheduledRegisterPanel configValues={configValues} />
           ) : (
             <Form form={form} layout="vertical">
               {activeTab === 'captcha' ? <SolverStatus /> : null}

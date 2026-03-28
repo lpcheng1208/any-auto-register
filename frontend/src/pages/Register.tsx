@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Card,
   Form,
@@ -22,17 +22,37 @@ import { getExecutorOptions, normalizeExecutorForPlatform } from '@/lib/register
 
 const { Text } = Typography
 
+interface PlatformOption {
+  value: string
+  label: string
+}
+
+interface PlatformResponseItem {
+  name: string
+  display_name: string
+}
+
+const DEFAULT_PLATFORM_OPTIONS: PlatformOption[] = [
+  { value: 'trae', label: 'Trae.ai' },
+  { value: 'cursor', label: 'Cursor' },
+  { value: 'kiro', label: 'Kiro' },
+  { value: 'grok', label: 'Grok' },
+  { value: 'chatgpt', label: 'ChatGPT' },
+  { value: 'openblocklabs', label: 'OpenBlockLabs' },
+]
+
 export default function Register() {
   const [form] = Form.useForm()
   const [task, setTask] = useState<any>(null)
   const [polling, setPolling] = useState(false)
+  const [platformOptions, setPlatformOptions] = useState<PlatformOption[]>(DEFAULT_PLATFORM_OPTIONS)
 
   useEffect(() => {
     apiFetch('/config').then((cfg) => {
       const currentPlatform = form.getFieldValue('platform') || 'trae'
       form.setFieldsValue({
         executor_type: normalizeExecutorForPlatform(currentPlatform, cfg.default_executor),
-        captcha_solver: cfg.default_captcha_solver || 'yescaptcha',
+        captcha_solver: cfg.default_captcha_solver || 'manual',
         mail_provider: cfg.mail_provider || 'moemail',
         yescaptcha_key: cfg.yescaptcha_key || '',
         moemail_api_url: cfg.moemail_api_url || '',
@@ -56,6 +76,25 @@ export default function Register() {
         cfworker_fingerprint: cfg.cfworker_fingerprint || '',
       })
     })
+  }, [form])
+
+  useEffect(() => {
+    apiFetch('/platforms')
+      .then((data) => {
+        const nextOptions = (data as PlatformResponseItem[])
+          .filter((item) => item.name !== 'tavily')
+          .map((item) => ({ value: item.name, label: item.display_name || item.name }))
+        if (nextOptions.length > 0) {
+          setPlatformOptions(nextOptions)
+          const currentPlatform = form.getFieldValue('platform')
+          if (!currentPlatform) {
+            form.setFieldValue('platform', nextOptions[0].value)
+          }
+        }
+      })
+      .catch(() => {
+        setPlatformOptions(DEFAULT_PLATFORM_OPTIONS)
+      })
   }, [form])
 
   const submit = async () => {
@@ -106,7 +145,7 @@ export default function Register() {
     const interval = setInterval(async () => {
       const t = await apiFetch(`/tasks/${id}`)
       setTask(t)
-      if (t.status === 'done' || t.status === 'failed') {
+      if (['success', 'partial_success', 'failed', 'cancelled', 'interrupted'].includes(t.status)) {
         clearInterval(interval)
         setPolling(false)
         if (t.cashier_urls && t.cashier_urls.length > 0) {
@@ -119,7 +158,7 @@ export default function Register() {
   const mailProvider = Form.useWatch('mail_provider', form)
   const captchaSolver = Form.useWatch('captcha_solver', form)
   const platform = Form.useWatch('platform', form)
-  const executorOptions = getExecutorOptions(platform)
+  const executorOptions = useMemo(() => getExecutorOptions(platform), [platform])
 
   useEffect(() => {
     const currentExecutor = form.getFieldValue('executor_type')
@@ -139,7 +178,7 @@ export default function Register() {
       <Form form={form} layout="vertical" onFinish={submit} initialValues={{
         platform: 'trae',
         executor_type: 'protocol',
-        captcha_solver: 'yescaptcha',
+        captcha_solver: 'manual',
         mail_provider: 'moemail',
         count: 1,
         register_delay_seconds: 0,
@@ -147,14 +186,7 @@ export default function Register() {
       }}>
         <Card title="基本配置" style={{ marginBottom: 16 }}>
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'trae', label: 'Trae.ai' },
-                { value: 'cursor', label: 'Cursor' },
-                { value: 'kiro', label: 'Kiro' },
-                { value: 'grok', label: 'Grok' },
-              ]}
-            />
+            <Select options={platformOptions} />
           </Form.Item>
           <Form.Item name="executor_type" label="执行器" rules={[{ required: true }]}>
             <Select options={executorOptions} />
@@ -273,8 +305,10 @@ export default function Register() {
           <Space>
             <span>任务状态</span>
             <Tag color={
-              task.status === 'done' ? 'success' :
-              task.status === 'failed' ? 'error' : 'processing'
+              task.status === 'success' ? 'success' :
+              task.status === 'partial_success' ? 'warning' :
+              task.status === 'failed' || task.status === 'interrupted' ? 'error' :
+              task.status === 'cancelled' ? 'default' : 'processing'
             }>
               {task.status}
             </Tag>
@@ -289,6 +323,11 @@ export default function Register() {
           {task.success != null && (
             <div style={{ marginTop: 8, color: '#10b981' }}>
               <CheckCircleOutlined /> 成功 {task.success} 个
+            </div>
+          )}
+          {task.failed != null && task.failed > 0 && (
+            <div style={{ marginTop: 8, color: '#ef4444' }}>
+              <CloseCircleOutlined /> 失败 {task.failed} 个
             </div>
           )}
           {task.errors?.length > 0 && (

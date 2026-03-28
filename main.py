@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from core.db import init_db
 from core.registry import load_all
+from services.task_service import mark_unfinished_tasks_interrupted
 from api.accounts import router as accounts_router
 from api.tasks import router as tasks_router
 from api.platforms import router as platforms_router
@@ -63,8 +64,11 @@ def _print_runtime_info() -> None:
 async def lifespan(app: FastAPI):
     _print_runtime_info()
     init_db()
+    interrupted_count = mark_unfinished_tasks_interrupted()
     load_all()
     print("[OK] 数据库初始化完成")
+    if interrupted_count:
+        print(f"[Task] 已将 {interrupted_count} 个未完成任务标记为 interrupted")
     from core.registry import list_platforms
     print(f"[OK] 已加载平台: {[p['name'] for p in list_platforms()]}")
     from core.scheduler import scheduler

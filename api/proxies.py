@@ -74,5 +74,9 @@ def toggle_proxy(proxy_id: int, session: Session = Depends(get_session)):
 
 @router.post("/check")
 def check_proxies(background_tasks: BackgroundTasks):
-    background_tasks.add_task(proxy_pool.check_all)
-    return {"message": "检测任务已启动"}
+    from api.tasks import ProxyCheckTaskRequest, start_proxy_check_task
+
+    return start_proxy_check_task(
+        ProxyCheckTaskRequest(),
+        background_tasks=background_tasks,
+    )

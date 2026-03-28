@@ -78,7 +78,7 @@ function AppContent() {
     {
       key: '/history',
       icon: <HistoryOutlined />,
-      label: '任务历史',
+      label: '任务中心',
     },
     {
       key: '/proxies',
