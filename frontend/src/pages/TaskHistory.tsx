@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Card,
@@ -14,7 +14,7 @@ import {
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { DeleteOutlined, ReloadOutlined, RetweetOutlined, StopOutlined } from '@ant-design/icons'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, API_BASE } from '@/lib/utils'
 
 const { Text, Paragraph } = Typography
 
@@ -145,6 +145,8 @@ function TaskDetailDrawer({
   const [events, setEvents] = useState<TaskEventItem[]>([])
   const [items, setItems] = useState<TaskLogItem[]>([])
   const [loading, setLoading] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const latestEventIdRef = useRef(0)
 
   const loadDetail = useCallback(async () => {
     if (!task) return
@@ -166,6 +168,56 @@ function TaskDetailDrawer({
       loadDetail()
     }
   }, [open, task, loadDetail])
+
+  useEffect(() => {
+    latestEventIdRef.current = events.length > 0 ? Math.max(...events.map((event) => event.id || 0)) : 0
+  }, [events])
+
+  useEffect(() => {
+    if (!open || !task) return
+    if (['success', 'partial_success', 'failed', 'cancelled', 'interrupted'].includes(task.status)) {
+      return
+    }
+
+    const since = latestEventIdRef.current
+    const es = new EventSource(`${API_BASE}/tasks/${task.id}/logs/stream?since=${since}`)
+
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data)
+      if (data.line && data.id) {
+        setEvents((prev) => {
+          if (prev.some((event) => event.id === data.id)) return prev
+          return [
+            ...prev,
+            {
+              id: data.id,
+              level: data.line.includes('✗') || data.line.includes('失败') || data.line.includes('异常')
+                ? 'error'
+                : data.line.includes('warning') || data.line.includes('失效')
+                  ? 'warning'
+                  : 'info',
+              message: data.line,
+              created_at: new Date().toISOString(),
+            },
+          ]
+        })
+      }
+      if (data.done) {
+        es.close()
+        loadDetail()
+      }
+    }
+
+    es.onerror = () => {
+      es.close()
+    }
+
+    return () => es.close()
+  }, [open, task, loadDetail])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [events])
 
   return (
     <Drawer
@@ -265,6 +317,7 @@ function TaskDetailDrawer({
                   {event.message}
                 </div>
               ))}
+              <div ref={bottomRef} />
             </div>
           </Card>
         </div>

@@ -402,6 +402,7 @@ def sanitize_scheduled_register_payload(payload: dict[str, Any]) -> dict[str, An
     for key in [
         "laoudo_auth",
         "yescaptcha_key",
+        "drift_mail_access_key",
         "duckmail_bearer",
         "freemail_admin_token",
         "freemail_password",
@@ -409,6 +410,7 @@ def sanitize_scheduled_register_payload(payload: dict[str, Any]) -> dict[str, An
         "cfworker_admin_token",
         "team_manager_key",
         "cpa_api_key",
+        "sub2api_admin_key",
         "grok2api_app_key",
     ]:
         if key in extra:
@@ -454,6 +456,7 @@ def _merge_schedule_payload(existing_payload: dict[str, Any], new_payload: dict[
     secret_keys = {
         "laoudo_auth",
         "yescaptcha_key",
+        "drift_mail_access_key",
         "duckmail_bearer",
         "freemail_admin_token",
         "freemail_password",
@@ -461,6 +464,7 @@ def _merge_schedule_payload(existing_payload: dict[str, Any], new_payload: dict[
         "cfworker_admin_token",
         "team_manager_key",
         "cpa_api_key",
+        "sub2api_admin_key",
         "grok2api_app_key",
     }
 
@@ -713,6 +717,7 @@ def sanitize_task_payload_for_storage(task_type: str, payload: dict[str, Any] | 
     for key in [
         "laoudo_auth",
         "yescaptcha_key",
+        "drift_mail_access_key",
         "duckmail_bearer",
         "freemail_admin_token",
         "freemail_password",
@@ -720,6 +725,7 @@ def sanitize_task_payload_for_storage(task_type: str, payload: dict[str, Any] | 
         "cfworker_admin_token",
         "team_manager_key",
         "cpa_api_key",
+        "sub2api_admin_key",
         "grok2api_app_key",
     ]:
         if key in extra:

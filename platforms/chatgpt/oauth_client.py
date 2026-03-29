@@ -817,7 +817,8 @@ class OAuthClient:
             skymail_client._used_codes = set()
 
         tried_codes = set(getattr(skymail_client, "_used_codes", set()))
-        otp_deadline = time.time() + 30
+        otp_timeout_seconds = 120
+        otp_deadline = time.time() + otp_timeout_seconds
         otp_sent_at = time.time()
 
         def validate_otp(code):
@@ -903,8 +904,8 @@ class OAuthClient:
                         candidate_codes.append(code)
 
                 if not candidate_codes:
-                    elapsed = int(30 - max(0, otp_deadline - time.time()))
-                    self._log(f"\u7b49\u5f85\u65b0\u7684 OTP... ({elapsed}s/30s)")
+                    elapsed = int(otp_timeout_seconds - max(0, otp_deadline - time.time()))
+                    self._log(f"\u7b49\u5f85\u65b0\u7684 OTP... ({elapsed}s/{otp_timeout_seconds}s)")
                     time.sleep(2)
                     continue
 

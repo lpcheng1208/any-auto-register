@@ -87,6 +87,8 @@ class AccountCheckTaskRequest(BaseModel):
     platform: Optional[str] = None
     limit: int = 50
     account_ids: list[int] = Field(default_factory=list)
+    sync_with_target: bool = False
+    delete_invalid: bool = False
 
 
 class ProxyCheckTaskRequest(BaseModel):
@@ -134,6 +136,11 @@ def _parse_positive_int_config(key: str) -> int | None:
 
 
 def _resolve_target_count(req: RegisterTaskRequest) -> int:
+    if req.count_mode == "dynamic":
+        configured_count = _parse_positive_int_config("default_target_count")
+        if configured_count is not None:
+            return configured_count
+        raise HTTPException(400, "动态补量模式必须先配置 default_target_count")
     if req.count > 0:
         return req.count
     configured_count = _parse_positive_int_config("default_target_count")
@@ -161,12 +168,6 @@ def _build_task_item_key(index: int, email: Optional[str] = None) -> str:
 
 
 def _sanitize_log_message(message: str) -> str:
-    if "使用代理:" in message or "代理可用:" in message or "代理不可用:" in message or "代理检测异常:" in message:
-        return "[已脱敏] 代理信息"
-    if any(token in message.lower() for token in ["token", "password", "bearer", "key"]):
-        return "[已脱敏] 敏感信息"
-    if "http://" in message or "https://" in message:
-        return "[已脱敏] 外部链接"
     return message
 
 
@@ -191,6 +192,47 @@ def _auto_upload_integrations(task_id: str, account) -> None:
 
 def _build_register_payload(req: RegisterTaskRequest) -> dict:
     return sanitize_task_payload_for_storage("register_batch", req.model_dump())
+
+
+def _hydrate_register_retry_payload(payload: dict) -> dict:
+    hydrated = dict(payload or {})
+    extra = dict(hydrated.get("extra") or {})
+
+    for key in [
+        "laoudo_auth",
+        "laoudo_email",
+        "laoudo_account_id",
+        "yescaptcha_key",
+        "drift_mail_base_url",
+        "drift_mail_access_key",
+        "drift_mail_domain",
+        "duckmail_api_url",
+        "duckmail_provider_url",
+        "duckmail_bearer",
+        "freemail_api_url",
+        "freemail_admin_token",
+        "freemail_username",
+        "freemail_password",
+        "moemail_api_url",
+        "mail_provider",
+        "mail215_api_url",
+        "mail215_api_key",
+        "mail215_domain",
+        "mail215_address_prefix",
+        "cfworker_api_url",
+        "cfworker_admin_token",
+        "cfworker_domain",
+        "cfworker_fingerprint",
+    ]:
+        if not extra.get(key):
+            value = config_store.get(key, "")
+            if value not in (None, ""):
+                extra[key] = value
+
+    hydrated["extra"] = extra
+    if not hydrated.get("captcha_solver"):
+        hydrated["captcha_solver"] = str(config_store.get("default_captcha_solver", "") or "yescaptcha")
+    return hydrated
 
 
 def _prepare_register_request(req: RegisterTaskRequest) -> RegisterTaskRequest:
@@ -371,7 +413,7 @@ def _run_register(
 
             _append_log(task_id, f"开始注册第 {index + 1}/{effective_count} 个账号")
             if selected_proxy:
-                _append_log(task_id, "使用代理: [已脱敏]")
+                _append_log(task_id, f"使用代理: {selected_proxy}")
 
             account = platform.register(email=req.email or None, password=req.password)
             save_account(account)
@@ -391,17 +433,18 @@ def _run_register(
             )
             _auto_upload_integrations(task_id, account)
             if cashier_url:
-                _append_log(task_id, "  [升级链接] [已脱敏]")
+                _append_log(task_id, f"  [升级链接] {cashier_url}")
                 add_task_cashier_url(task_id, cashier_url)
             return {
                 "status": "success",
                 "email": account.email,
                 "cashier_url": cashier_url,
+                "account": account,
             }
-        except Exception:
+        except Exception as exc:
             if selected_proxy:
                 proxy_pool.report_fail(selected_proxy)
-            _append_log(task_id, "✗ 注册失败: [已脱敏]", level="error")
+            _append_log(task_id, f"✗ 注册失败: {exc}", level="error")
             append_task_item(
                 task_id=task_id,
                 item_type="account",
@@ -416,6 +459,7 @@ def _run_register(
 
     max_workers = min(req.concurrency, effective_count, 5)
     cancelled = False
+    successful_accounts: list = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_do_one, index) for index in range(effective_count)]
         for future in as_completed(futures):
@@ -427,6 +471,8 @@ def _run_register(
             processed += 1
             if result["status"] == "success":
                 success += 1
+                if result.get("account") is not None:
+                    successful_accounts.append(result["account"])
             elif result["status"] == "failed":
                 failed += 1
                 errors.append(result["error"])
@@ -449,6 +495,10 @@ def _run_register(
 
     final_cashier_urls = list(get_runtime_task(task_id).cashier_urls) if get_runtime_task(task_id) else []
     final_status = _normalize_terminal_status(success, failed, cancelled or is_cancel_requested(task_id))
+    if final_status == TASK_STATUS_PARTIAL_SUCCESS and successful_accounts:
+        _append_log(task_id, f"任务部分成功，补做 {len(successful_accounts)} 个成功账号的远端同步")
+        for account in successful_accounts:
+            _auto_upload_integrations(task_id, account)
     _append_log(task_id, f"完成: 成功 {success} 个, 失败 {failed} 个")
     update_task_status(
         task_id,
@@ -502,31 +552,73 @@ def _run_account_check(task_id: str, payload: dict) -> None:
     valid_count = 0
     invalid_count = 0
     error_count = 0
+    deleted_count = 0
     processed = 0
 
     for account_row in accounts:
         if is_cancel_requested(task_id):
             break
         try:
-            platform_cls = get(account_row.platform)
-            plugin = platform_cls(config=RegisterConfig())
-            account_obj = Account(
-                platform=account_row.platform,
-                email=account_row.email,
-                password=account_row.password,
-                user_id=account_row.user_id,
-                region=account_row.region,
-                token=account_row.token,
-                extra=json.loads(account_row.extra_json or "{}"),
-            )
-            valid = plugin.check_valid(account_obj)
-            with Session(engine) as session:
-                db_account = session.get(AccountModel, account_row.id)
-                if db_account is not None:
-                    db_account.status = db_account.status if valid else "invalid"
-                    db_account.updated_at = datetime.now(timezone.utc)
-                    session.add(db_account)
-                    session.commit()
+            detail: dict[str, Any] = {}
+            valid = False
+            was_deleted = False
+            if req.sync_with_target and account_row.platform == "chatgpt":
+                from services.chatgpt_target_sync import sync_and_cleanup_account
+
+                with Session(engine) as session:
+                    db_account = session.get(AccountModel, account_row.id)
+                    if db_account is None:
+                        processed += 1
+                        continue
+
+                    result = sync_and_cleanup_account(
+                        db_account,
+                        delete_invalid=req.delete_invalid,
+                        refresh_target=True,
+                    )
+                    detail = {
+                        "valid": result["valid"],
+                        "target": result.get("target") or {},
+                        "delete_local": result.get("delete_local", False),
+                    }
+                    if result["valid"]:
+                        db_account.updated_at = datetime.now(timezone.utc)
+                        session.add(db_account)
+                        session.commit()
+                    elif result.get("delete_local"):
+                        session.delete(db_account)
+                        session.commit()
+                        deleted_count += 1
+                        was_deleted = True
+                    else:
+                        db_account.status = "invalid"
+                        db_account.updated_at = datetime.now(timezone.utc)
+                        session.add(db_account)
+                        session.commit()
+
+                valid = bool(result["valid"])
+            else:
+                platform_cls = get(account_row.platform)
+                plugin = platform_cls(config=RegisterConfig())
+                account_obj = Account(
+                    platform=account_row.platform,
+                    email=account_row.email,
+                    password=account_row.password,
+                    user_id=account_row.user_id,
+                    region=account_row.region,
+                    token=account_row.token,
+                    extra=json.loads(account_row.extra_json or "{}"),
+                )
+                valid = plugin.check_valid(account_obj)
+                detail = {"valid": valid}
+                with Session(engine) as session:
+                    db_account = session.get(AccountModel, account_row.id)
+                    if db_account is not None:
+                        db_account.status = db_account.status if valid else "invalid"
+                        db_account.updated_at = datetime.now(timezone.utc)
+                        session.add(db_account)
+                        session.commit()
+
             if valid:
                 valid_count += 1
                 append_task_item(
@@ -536,9 +628,20 @@ def _run_account_check(task_id: str, payload: dict) -> None:
                     platform=account_row.platform,
                     email=account_row.email,
                     status="success",
-                    detail={"valid": True},
+                    detail=detail,
                 )
                 _append_log(task_id, f"✓ 账号有效: {account_row.email}")
+            elif was_deleted:
+                append_task_item(
+                    task_id=task_id,
+                    item_type="account",
+                    item_key=account_row.email,
+                    platform=account_row.platform,
+                    email=account_row.email,
+                    status="success",
+                    detail=detail,
+                )
+                _append_log(task_id, f"✓ 目标端账号已失效，已删除本地账号: {account_row.email}", level="warning")
             else:
                 invalid_count += 1
                 append_task_item(
@@ -549,7 +652,7 @@ def _run_account_check(task_id: str, payload: dict) -> None:
                     email=account_row.email,
                     status="failed",
                     error="invalid",
-                    detail={"valid": False},
+                    detail=detail,
                 )
                 _append_log(task_id, f"✗ 账号失效: {account_row.email}", level="warning")
         except Exception:
@@ -570,19 +673,19 @@ def _run_account_check(task_id: str, payload: dict) -> None:
             task_id,
             status=TASK_STATUS_CANCEL_REQUESTED if is_cancel_requested(task_id) else TASK_STATUS_RUNNING,
             processed_count=processed,
-            success_count=valid_count,
+            success_count=valid_count + deleted_count,
             failed_count=invalid_count + error_count,
-            summary={"valid": valid_count, "invalid": invalid_count, "error": error_count},
+            summary={"valid": valid_count, "invalid": invalid_count, "error": error_count, "deleted": deleted_count},
         )
 
-    final_status = _normalize_terminal_status(valid_count, invalid_count + error_count, is_cancel_requested(task_id))
+    final_status = _normalize_terminal_status(valid_count + deleted_count, invalid_count + error_count, is_cancel_requested(task_id))
     update_task_status(
         task_id,
         status=final_status,
         processed_count=processed,
-        success_count=valid_count,
+        success_count=valid_count + deleted_count,
         failed_count=invalid_count + error_count,
-        summary={"valid": valid_count, "invalid": invalid_count, "error": error_count},
+        summary={"valid": valid_count, "invalid": invalid_count, "error": error_count, "deleted": deleted_count},
     )
 
 
@@ -631,7 +734,7 @@ def _run_proxy_check(task_id: str, payload: dict) -> None:
                     status="success",
                     detail={"region": proxy.region},
                 )
-                _append_log(task_id, "✓ 代理可用: [已脱敏]")
+                _append_log(task_id, f"✓ 代理可用: {proxy.url}")
             else:
                 proxy_pool.report_fail(proxy.url)
                 fail_count += 1
@@ -645,8 +748,8 @@ def _run_proxy_check(task_id: str, payload: dict) -> None:
                     error=f"http {response.status_code}",
                     detail={"region": proxy.region},
                 )
-                _append_log(task_id, "✗ 代理不可用: [已脱敏]", level="warning")
-        except Exception:
+                _append_log(task_id, f"✗ 代理不可用: {proxy.url}", level="warning")
+        except Exception as exc:
             proxy_pool.report_fail(proxy.url)
             fail_count += 1
             append_task_item(
@@ -659,7 +762,7 @@ def _run_proxy_check(task_id: str, payload: dict) -> None:
                 error="代理检测异常",
                 detail={"region": proxy.region},
             )
-            _append_log(task_id, "✗ 代理检测异常: [已脱敏]", level="error")
+            _append_log(task_id, f"✗ 代理检测异常: {proxy.url} - {exc}", level="error")
         processed += 1
         update_task_status(
             task_id,
@@ -1081,10 +1184,18 @@ def retry_task(task_id: str, body: RetryTaskRequest, background_tasks: Backgroun
         raise HTTPException(400, "仅已结束任务允许重试")
     if task.status not in RETRYABLE_TASK_STATUSES:
         raise HTTPException(400, "当前任务状态不允许重试")
-    if task.task_type == "register_batch":
-        raise HTTPException(400, "注册任务包含脱敏配置，暂不支持直接重试，请重新提交注册任务")
 
     payload = get_task_payload(task_id) if body.inherit_payload else {}
+    if task.task_type == "register_batch":
+        if not payload:
+            raise HTTPException(400, "注册任务重试必须继承原任务参数")
+        hydrated_payload = _hydrate_register_retry_payload(payload)
+        return start_register_task(
+            RegisterTaskRequest(**hydrated_payload),
+            background_tasks=background_tasks,
+            trigger_source="retry",
+            parent_task_id=task_id,
+        )
     if task.task_type == "account_check_batch":
         return start_account_check_task(
             AccountCheckTaskRequest(**payload),

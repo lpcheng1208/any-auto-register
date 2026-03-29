@@ -5,13 +5,32 @@ CPA (Codex Protocol API) 上传功能
 import json
 import base64
 import logging
-from typing import Tuple
+from typing import Any, Tuple
 from datetime import datetime, timezone, timedelta
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi import CurlMime
 
 logger = logging.getLogger(__name__)
+
+SUB2API_DEFAULT_CONCURRENCY = 2
+SUB2API_DEFAULT_LOAD_FACTOR = 1
+SUB2API_DEFAULT_PRIORITY = 1
+SUB2API_DEFAULT_RATE_MULTIPLIER = 1.0
+SUB2API_DEFAULT_MODEL_MAPPING = {
+    "claude-opus-4-6": "gpt-5.4",
+    "claude-opus-4-6-thinking": "gpt-5.4",
+    "claude-opus-4-5": "gpt-5.4",
+    "claude-opus-4-5-20251101": "gpt-5.4",
+    "claude-opus-4-5-thinking": "gpt-5.4",
+    "claude-sonnet-4-6": "gpt-5.4",
+    "claude-sonnet-4-6-thinking": "gpt-5.4",
+    "claude-sonnet-4-5": "gpt-5.4",
+    "claude-sonnet-4-5-20250929": "gpt-5.4",
+    "claude-sonnet-4-5-thinking": "gpt-5.4",
+    "claude-haiku-4-5": "gpt-5.4",
+    "claude-haiku-4-5-20251001": "gpt-5.4",
+}
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -196,6 +215,218 @@ def upload_to_team_manager(
         return False, error_msg
     except Exception as e:
         logger.error(f"Team Manager 上传异常: {e}")
+        return False, f"上传异常: {str(e)}"
+
+
+def _request_json(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> tuple[int, Any]:
+    response = cffi_requests.request(
+        method=method,
+        url=url,
+        headers=headers,
+        params=params,
+        json=json_body,
+        proxies=None,
+        verify=False,
+        timeout=30,
+        impersonate="chrome110",
+    )
+    try:
+        return response.status_code, response.json()
+    except Exception:
+        return response.status_code, response.text
+
+
+def _extract_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    candidates: list[Any] = [
+        payload.get("items"),
+        payload.get("accounts"),
+    ]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.extend([data.get("items"), data.get("accounts")])
+    elif isinstance(data, list):
+        candidates.append(data)
+
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return [item for item in candidate if isinstance(item, dict)]
+    return []
+
+
+def _match_account_email(item: dict[str, Any], email: str) -> bool:
+    item_email = str(item.get("email") or item.get("username") or item.get("name") or "").strip().lower()
+    return bool(item_email) and item_email == email.strip().lower()
+
+
+def _build_sub2api_credentials(
+    *,
+    access_token: str,
+    refresh_token: str,
+    session_token: str,
+    id_token: str,
+    client_id: str,
+    cookies: str,
+) -> dict[str, Any]:
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "session_token": session_token,
+        "id_token": id_token,
+        "client_id": client_id,
+        "cookies": cookies,
+        "model_mapping": dict(SUB2API_DEFAULT_MODEL_MAPPING),
+    }
+
+
+def _build_sub2api_account_payload(
+    *,
+    email: str,
+    credentials: dict[str, Any],
+    group_ids: list[int],
+    include_platform: bool,
+    proxy_id: int | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": email,
+        "type": "oauth",
+        "credentials": credentials,
+        "proxy_id": proxy_id,
+        "concurrency": SUB2API_DEFAULT_CONCURRENCY,
+        "priority": SUB2API_DEFAULT_PRIORITY,
+        "rate_multiplier": SUB2API_DEFAULT_RATE_MULTIPLIER,
+        "load_factor": SUB2API_DEFAULT_LOAD_FACTOR,
+        "group_ids": group_ids,
+    }
+    if include_platform:
+        payload["platform"] = "openai"
+    return payload
+
+
+def _list_active_sub2api_group_ids(base_url: str, admin_key: str) -> list[int]:
+    status_code, payload = _request_json(
+        "GET",
+        f"{base_url.rstrip('/')}/api/v1/admin/groups/all",
+        headers={"X-API-Key": admin_key},
+        params={"platform": "openai"},
+    )
+    if status_code >= 400:
+        raise RuntimeError(f"sub2api 分组查询失败: HTTP {status_code}")
+
+    group_ids: list[int] = []
+    for item in _extract_items(payload):
+        status = str(item.get("status") or "active").strip().lower()
+        if status and status != "active":
+            continue
+        group_id = item.get("id")
+        if isinstance(group_id, int):
+            group_ids.append(group_id)
+        elif isinstance(group_id, str) and group_id.isdigit():
+            group_ids.append(int(group_id))
+    return group_ids
+
+
+def upload_to_sub2api(
+    account,
+    base_url: str = None,
+    admin_key: str = None,
+) -> Tuple[bool, str]:
+    """上传单账号到 sub2api 管理接口。
+    已存在账号时更新凭证，不存在时创建。"""
+    if not base_url:
+        base_url = _get_config_value("sub2api_url")
+    if not admin_key:
+        admin_key = _get_config_value("sub2api_admin_key")
+    if not base_url:
+        return False, "sub2api URL 未配置"
+    if not admin_key:
+        return False, "sub2api Admin Key 未配置"
+
+    email = getattr(account, "email", "")
+    access_token = getattr(account, "access_token", "")
+    refresh_token = getattr(account, "refresh_token", "")
+    session_token = getattr(account, "session_token", "")
+    id_token = getattr(account, "id_token", "")
+    client_id = getattr(account, "client_id", "app_EMoamEEZ73f0CkXaXp7hrann")
+    cookies = getattr(account, "cookies", "")
+
+    if not email:
+        return False, "账号缺少 email"
+    if not access_token:
+        return False, "账号缺少 access_token"
+
+    headers = {"X-API-Key": admin_key}
+    group_ids = _list_active_sub2api_group_ids(base_url, admin_key)
+    credentials = _build_sub2api_credentials(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        session_token=session_token,
+        id_token=id_token,
+        client_id=client_id,
+        cookies=cookies,
+    )
+
+    try:
+        status_code, payload = _request_json(
+            "GET",
+            f"{base_url.rstrip('/')}/api/v1/admin/accounts",
+            headers=headers,
+            params={"search": email, "page": 1, "page_size": 100},
+        )
+        if status_code >= 400:
+            return False, f"sub2api 查询失败: HTTP {status_code}"
+
+        existing = next((item for item in _extract_items(payload) if _match_account_email(item, email)), None)
+        if existing:
+            remote_id = existing.get("id")
+            status_code, update_payload = _request_json(
+                "PUT",
+                f"{base_url.rstrip('/')}/api/v1/admin/accounts/{remote_id}",
+                headers=headers,
+                json_body=_build_sub2api_account_payload(
+                    email=email,
+                    credentials=credentials,
+                    group_ids=group_ids,
+                    include_platform=False,
+                    proxy_id=0,
+                ),
+            )
+            if status_code in (200, 201):
+                return True, "同步成功（已更新到 sub2api）"
+            if isinstance(update_payload, dict):
+                return False, str(update_payload.get("message") or update_payload.get("error") or f"sub2api 更新失败: HTTP {status_code}")
+            return False, f"sub2api 更新失败: HTTP {status_code}"
+
+        status_code, create_payload = _request_json(
+            "POST",
+            f"{base_url.rstrip('/')}/api/v1/admin/accounts",
+            headers=headers,
+            json_body=_build_sub2api_account_payload(
+                email=email,
+                credentials=credentials,
+                group_ids=group_ids,
+                include_platform=True,
+                proxy_id=None,
+            ),
+        )
+        if status_code in (200, 201):
+            return True, "同步成功（已创建到 sub2api）"
+        if isinstance(create_payload, dict):
+            return False, str(create_payload.get("message") or create_payload.get("error") or f"sub2api 创建失败: HTTP {status_code}")
+        return False, f"sub2api 创建失败: HTTP {status_code}"
+    except Exception as e:
+        logger.error(f"sub2api 上传异常: {e}")
         return False, f"上传异常: {str(e)}"
 
 

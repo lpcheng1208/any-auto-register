@@ -90,6 +90,13 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
     extra = extra or {}
     if provider == "tempmail_lol":
         return TempMailLolMailbox(proxy=proxy)
+    elif provider == "driftmail":
+        return DriftMailMailbox(
+            api_url=extra.get("drift_mail_base_url", "https://drift-mail.qimiaojiangjizhao.workers.dev"),
+            access_key=extra.get("drift_mail_access_key", ""),
+            domain=extra.get("drift_mail_domain", ""),
+            proxy=proxy,
+        )
     elif provider == "duckmail":
         return DuckMailMailbox(
             api_url=extra.get("duckmail_api_url", "https://www.duckmail.sbs"),
@@ -310,6 +317,157 @@ class TempMailLolMailbox(BaseMailbox):
                     if keyword and keyword.lower() not in text.lower():
                         continue
                     code = self._safe_extract(text, code_pattern)
+                    if code:
+                        return code
+            except Exception:
+                pass
+            time.sleep(3)
+        raise TimeoutError(f"等待验证码超时 ({timeout}s)")
+
+
+class DriftMailMailbox(BaseMailbox):
+    """Drift Mail 临时邮箱服务"""
+
+    def __init__(self, api_url: str, access_key: str = "", domain: str = "", proxy: str = None):
+        self.api = api_url.rstrip("/")
+        self.access_key = access_key.strip()
+        self.domain = domain.strip()
+        self.proxy = {"http": proxy, "https": proxy} if proxy else None
+
+    def _admin_headers(self) -> dict:
+        if not self.access_key:
+            raise RuntimeError("Drift Mail access key 未配置，请检查 drift_mail_access_key")
+        return {
+            "x-access-key": self.access_key,
+            "content-type": "application/json",
+            "accept": "application/json",
+        }
+
+    def _mailbox_headers(self, token: str) -> dict:
+        return {
+            "Authorization": f"Bearer {token}",
+            "content-type": "application/json",
+            "accept": "application/json",
+        }
+
+    def _list_messages(self, token: str) -> list[dict]:
+        import requests
+
+        response = requests.get(
+            f"{self.api}/api/messages",
+            headers=self._mailbox_headers(token),
+            proxies=self.proxy,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return []
+        for key in ("messages", "hydra:member", "items"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                return candidate
+        return []
+
+    def _get_message_detail(self, token: str, message_id: str) -> dict:
+        import requests
+
+        response = requests.get(
+            f"{self.api}/api/messages/{message_id}",
+            headers=self._mailbox_headers(token),
+            proxies=self.proxy,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    def _message_blob(self, message: dict) -> str:
+        sender = message.get("from")
+        if isinstance(sender, dict):
+            sender_text = " ".join(str(v) for v in sender.values() if v)
+        elif isinstance(sender, list):
+            sender_text = " ".join(str(v) for v in sender if v)
+        else:
+            sender_text = str(sender or "")
+        parts = [
+            str(message.get("subject") or ""),
+            str(message.get("text") or ""),
+            str(message.get("html") or ""),
+            sender_text,
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    def get_email(self) -> MailboxAccount:
+        import requests
+
+        payload = {"domain": self.domain} if self.domain else {}
+        response = requests.post(
+            f"{self.api}/api/generate",
+            json=payload,
+            headers=self._admin_headers(),
+            proxies=self.proxy,
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        email = str(data.get("address") or data.get("email") or "").strip()
+        token = str(data.get("token") or "").strip()
+        if not email or not token:
+            raise RuntimeError(f"Drift Mail 返回异常，缺少 address/token: {data}")
+        try:
+            requests.patch(
+                f"{self.api}/api/me/extend",
+                json={"minutes": 30},
+                headers=self._mailbox_headers(token),
+                proxies=self.proxy,
+                timeout=10,
+            )
+        except Exception:
+            pass
+        return MailboxAccount(email=email, account_id=token, extra={"token": token})
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        token = str(account.account_id or (account.extra or {}).get("token") or "").strip()
+        if not token:
+            return set()
+        try:
+            return {
+                str(message.get("id"))
+                for message in self._list_messages(token)
+                if message.get("id") is not None
+            }
+        except Exception:
+            return set()
+
+    def wait_for_code(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None, code_pattern: str = None, **kwargs) -> str:
+        import time
+
+        token = str(account.account_id or (account.extra or {}).get("token") or "").strip()
+        if not token:
+            raise RuntimeError("Drift Mail mailbox token 缺失")
+
+        seen = {str(item) for item in (before_ids or set())}
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                messages = self._list_messages(token)
+                for message in messages:
+                    message_id = str(message.get("id") or "").strip()
+                    if not message_id or message_id in seen:
+                        continue
+                    seen.add(message_id)
+                    try:
+                        detail = self._get_message_detail(token, message_id)
+                    except Exception:
+                        detail = message
+                    content = self._message_blob(detail or message)
+                    if keyword and keyword.lower() not in content.lower():
+                        continue
+                    code = self._safe_extract(content, code_pattern)
                     if code:
                         return code
             except Exception:

@@ -21,6 +21,7 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   mail_provider: [
     { label: 'Laoudo（固定邮箱）', value: 'laoudo' },
     { label: 'TempMail.lol（自动生成）', value: 'tempmail_lol' },
+    { label: 'Drift Mail（自动生成）', value: 'driftmail' },
     { label: 'DuckMail（自动生成）', value: 'duckmail' },
     { label: 'MoeMail (sall.cc)', value: 'moemail' },
     { label: 'Freemail（自建 CF Worker）', value: 'freemail' },
@@ -36,6 +37,11 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: 'YesCaptcha', value: 'yescaptcha' },
     { label: '本地 Solver (Camoufox)', value: 'local_solver' },
     { label: '手动', value: 'manual' },
+  ],
+  chatgpt_sync_target_provider: [
+    { label: 'sub2api', value: 'sub2api' },
+    { label: 'CPA / CLIProxyAPI', value: 'cliproxyapi' },
+    { label: 'Team Manager', value: 'team_manager' },
   ],
 }
 
@@ -115,6 +121,15 @@ const TAB_ITEMS = [
         fields: [],
       },
       {
+        title: 'Drift Mail',
+        desc: '基于 access key 自动生成邮箱，并使用 mailbox token 轮询收件箱',
+        fields: [
+          { key: 'drift_mail_base_url', label: 'API URL', placeholder: 'https://drift-mail.example.com' },
+          { key: 'drift_mail_access_key', label: 'Access Key', secret: true },
+          { key: 'drift_mail_domain', label: '域名（可选）', placeholder: 'example.com' },
+        ],
+      },
+      {
         title: 'DuckMail',
         desc: '自动生成邮箱，随机创建账号（默认无需配置）',
         fields: [
@@ -166,6 +181,13 @@ const TAB_ITEMS = [
     icon: <ApiOutlined />,
     sections: [
       {
+        title: '同步目标',
+        desc: '选择 ChatGPT 账号自动同步的目标，并配置对应接入参数',
+        fields: [
+          { key: 'chatgpt_sync_target_provider', label: 'Sync Target Provider', type: 'select' },
+        ],
+      },
+      {
         title: 'CPA 面板',
         desc: '注册完成后自动上传到 CPA 管理平台',
         fields: [
@@ -179,6 +201,14 @@ const TAB_ITEMS = [
         fields: [
           { key: 'team_manager_url', label: 'API URL', placeholder: 'https://your-tm.example.com' },
           { key: 'team_manager_key', label: 'API Key', secret: true },
+        ],
+      },
+      {
+        title: 'sub2api',
+        desc: '上传到 sub2api 管理接口',
+        fields: [
+          { key: 'sub2api_url', label: 'API URL', placeholder: 'https://your-sub2api.example.com' },
+          { key: 'sub2api_admin_key', label: 'Admin Key', secret: true },
         ],
       },
     ],
@@ -306,12 +336,13 @@ function formatResultText(data: unknown) {
 }
 
 function buildRegisterPayload(values: Record<string, any>) {
+  const countMode = values.count_mode || 'fixed'
   return {
     platform: values.platform,
     email: values.email || null,
     password: values.password || null,
-    count: values.count || 1,
-    count_mode: values.count_mode || 'fixed',
+    count: countMode === 'dynamic' ? 0 : (values.count || 1),
+    count_mode: countMode,
     concurrency: values.concurrency || 1,
     register_delay_seconds: values.register_delay_seconds || 0,
     proxy: values.proxy || null,
@@ -322,6 +353,9 @@ function buildRegisterPayload(values: Record<string, any>) {
       laoudo_auth: values.laoudo_auth,
       laoudo_email: values.laoudo_email,
       laoudo_account_id: values.laoudo_account_id,
+      drift_mail_base_url: values.drift_mail_base_url,
+      drift_mail_access_key: values.drift_mail_access_key,
+      drift_mail_domain: values.drift_mail_domain,
       moemail_api_url: values.moemail_api_url,
       duckmail_api_url: values.duckmail_api_url,
       duckmail_provider_url: values.duckmail_provider_url,
@@ -502,6 +536,9 @@ function ScheduledRegisterPanel({ configValues }: { configValues: Record<string,
       laoudo_auth: configValues.laoudo_auth || '',
       laoudo_email: configValues.laoudo_email || '',
       laoudo_account_id: configValues.laoudo_account_id || '',
+      drift_mail_base_url: configValues.drift_mail_base_url || 'https://drift-mail.qimiaojiangjizhao.workers.dev',
+      drift_mail_access_key: configValues.drift_mail_access_key || '',
+      drift_mail_domain: configValues.drift_mail_domain || '',
       duckmail_api_url: configValues.duckmail_api_url || '',
       duckmail_provider_url: configValues.duckmail_provider_url || '',
       duckmail_bearer: configValues.duckmail_bearer || '',
@@ -671,14 +708,29 @@ function ScheduledRegisterPanel({ configValues }: { configValues: Record<string,
               <Form.Item name="count_mode" label="数量模式" style={{ flex: 1 }}>
                 <Select options={COUNT_MODE_OPTIONS} />
               </Form.Item>
-              <Form.Item
-                name="count"
-                label={countMode === 'dynamic' ? '目标账号数' : '批量数量'}
-                extra={countMode === 'dynamic' ? '占位逻辑：按当前有效账号数补足缺口。' : undefined}
-                style={{ flex: 1 }}
-              >
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
+              {countMode === 'dynamic' ? (
+                <Form.Item
+                  label="目标账号数"
+                  extra="动态补量模式直接读取全局配置里的“注册设置 -> 目标数量（default_target_count）”。"
+                  style={{ flex: 1 }}
+                >
+                  <InputNumber
+                    min={1}
+                    style={{ width: '100%' }}
+                    value={Number(configValues.default_target_count || 0) || undefined}
+                    disabled
+                    placeholder="请先在全局配置里设置目标数量"
+                  />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="count"
+                  label="批量数量"
+                  style={{ flex: 1 }}
+                >
+                  <InputNumber min={1} style={{ width: '100%' }} />
+                </Form.Item>
+              )}
               <Form.Item name="concurrency" label="并发数" style={{ flex: 1 }}>
                 <InputNumber min={1} max={5} style={{ width: '100%' }} />
               </Form.Item>
@@ -993,10 +1045,15 @@ export default function Settings() {
   const save = async () => {
     setSaving(true)
     try {
-      const values = form.getFieldsValue()
+      const values = {
+        ...configValues,
+        ...form.getFieldsValue(true),
+      }
       await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: values }) })
+      const latest = await apiFetch('/config')
+      form.setFieldsValue(latest)
       message.success('保存成功')
-      setConfigValues(values)
+      setConfigValues(latest)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } finally {

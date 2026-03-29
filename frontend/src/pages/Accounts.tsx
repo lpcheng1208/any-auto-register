@@ -40,6 +40,19 @@ const STATUS_COLORS: Record<string, string> = {
   invalid: 'error',
 }
 
+function formatDateTime(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mi = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`
+}
+
 function LogPanel({ taskId, onDone }: { taskId: string; onDone: () => void }) {
   const [lines, setLines] = useState<string[]>([])
   const [done, setDone] = useState(false)
@@ -168,6 +181,7 @@ export default function Accounts() {
   const [currentPlatform, setCurrentPlatform] = useState(platform || 'trae')
   const [accounts, setAccounts] = useState<any[]>([])
   const [total, setTotal] = useState(0)
+  const [remoteSummary, setRemoteSummary] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
@@ -201,6 +215,16 @@ export default function Accounts() {
       const data = await apiFetch(`/accounts?${params}`)
       setAccounts(data.items)
       setTotal(data.total)
+      if (currentPlatform === 'chatgpt') {
+        try {
+          const stats = await apiFetch('/accounts/stats')
+          setRemoteSummary(stats.remote_summary || null)
+        } catch {
+          setRemoteSummary(null)
+        }
+      } else {
+        setRemoteSummary(null)
+      }
     } finally {
       setLoading(false)
     }
@@ -248,7 +272,7 @@ export default function Accounts() {
     if (selectedRowKeys.length === 0) return
     setSyncCpaLoading(true)
     try {
-      const result = await apiFetch('/chatgpt/batch-upload-cpa', {
+      const result = await apiFetch('/chatgpt/batch-sync-target', {
         method: 'POST',
         body: JSON.stringify({ account_ids: Array.from(selectedRowKeys) }),
       })
@@ -327,6 +351,9 @@ export default function Accounts() {
             laoudo_auth: cfg.laoudo_auth,
             laoudo_email: cfg.laoudo_email,
             laoudo_account_id: cfg.laoudo_account_id,
+            drift_mail_base_url: cfg.drift_mail_base_url,
+            drift_mail_access_key: cfg.drift_mail_access_key,
+            drift_mail_domain: cfg.drift_mail_domain,
             yescaptcha_key: cfg.yescaptcha_key,
             moemail_api_url: cfg.moemail_api_url,
             duckmail_address: cfg.duckmail_address,
@@ -418,7 +445,7 @@ export default function Accounts() {
       title: '注册时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      render: (text: string) => (text ? new Date(text).toLocaleDateString() : '-'),
+      render: (text: string) => formatDateTime(text),
     },
     {
       title: '操作',
@@ -462,7 +489,10 @@ export default function Accounts() {
               { value: 'invalid', label: '已失效' },
             ]}
           />
-          <Text type="secondary">{total} 个账号</Text>
+          <Text type="secondary">
+            本地 {total} 个账号
+            {currentPlatform === 'chatgpt' && remoteSummary ? ` / 远端 ${remoteSummary.total ?? 0} 个账号` : ''}
+          </Text>
           {selectedRowKeys.length > 0 && (
             <Text type="success">已选 {selectedRowKeys.length} 个</Text>
           )}
@@ -480,7 +510,7 @@ export default function Accounts() {
               disabled={selectedRowKeys.length === 0}
               loading={syncCpaLoading}
             >
-              同步到 CPA
+              同步到远端
             </Button>
           )}
           <Button icon={<UploadOutlined />} onClick={() => setImportModalOpen(true)}>导入</Button>

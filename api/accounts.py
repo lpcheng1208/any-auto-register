@@ -36,6 +36,55 @@ class BatchDeleteRequest(BaseModel):
     ids: list[int]
 
 
+def _reconcile_chatgpt_local_with_remote(session: Session) -> dict[str, int | str]:
+    from services.external_sync import list_remote_chatgpt_accounts_detail
+
+    remote_detail = list_remote_chatgpt_accounts_detail()
+    remote_emails = set(remote_detail.get("emails") or set())
+    local_accounts = list(session.exec(select(AccountModel).where(AccountModel.platform == "chatgpt")).all())
+
+    local_email_count = 0
+    missing_emails: list[str] = []
+    for account in local_accounts:
+        email = str(account.email or "").strip().lower()
+        if not email:
+            continue
+        local_email_count += 1
+        if email not in remote_emails:
+            missing_emails.append(email)
+            session.delete(account)
+    deleted_local_accounts = len(missing_emails)
+
+    if local_email_count:
+        logger.info(
+            "chatgpt account reconcile snapshot: provider=%s local_email_count=%s remote_email_count=%s remote_total=%s",
+            str(remote_detail.get("provider") or ""),
+            local_email_count,
+            len(remote_emails),
+            int(remote_detail.get("total") or 0),
+        )
+    if missing_emails:
+        preview = ", ".join(missing_emails[:20])
+        suffix = "" if len(missing_emails) <= 20 else f" ...(+{len(missing_emails) - 20})"
+        logger.warning(
+            "chatgpt account reconcile deleting local emails: provider=%s count=%s emails=%s%s",
+            str(remote_detail.get("provider") or ""),
+            deleted_local_accounts,
+            preview,
+            suffix,
+        )
+
+    if deleted_local_accounts:
+        session.commit()
+
+    return {
+        "provider": str(remote_detail.get("provider") or ""),
+        "deleted_error_accounts": int(remote_detail.get("deleted_error_accounts") or 0),
+        "deleted_local_accounts": deleted_local_accounts,
+        "remote_total": int(remote_detail.get("total") or 0),
+    }
+
+
 @router.get("")
 def list_accounts(
     platform: Optional[str] = None,
@@ -45,6 +94,20 @@ def list_accounts(
     page_size: int = 20,
     session: Session = Depends(get_session),
 ):
+    if platform == "chatgpt":
+        try:
+            sync_summary = _reconcile_chatgpt_local_with_remote(session)
+            if sync_summary.get("deleted_local_accounts") or sync_summary.get("deleted_error_accounts"):
+                logger.info(
+                    "chatgpt account list reconcile: provider=%s deleted_error_accounts=%s deleted_local_accounts=%s remote_total=%s",
+                    sync_summary.get("provider"),
+                    sync_summary.get("deleted_error_accounts"),
+                    sync_summary.get("deleted_local_accounts"),
+                    sync_summary.get("remote_total"),
+                )
+        except Exception as exc:
+            logger.warning("chatgpt account list reconcile failed: %s", exc)
+
     q = select(AccountModel)
     if platform:
         q = q.where(AccountModel.platform == platform)
@@ -53,7 +116,11 @@ def list_accounts(
     if email:
         q = q.where(AccountModel.email.contains(email))
     total = len(session.exec(q).all())
-    items = session.exec(q.offset((page - 1) * page_size).limit(page_size)).all()
+    items = session.exec(
+        q.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return {"total": total, "page": page, "items": items}
 
 
@@ -76,13 +143,38 @@ def create_account(body: AccountCreate, session: Session = Depends(get_session))
 @router.get("/stats")
 def get_stats(session: Session = Depends(get_session)):
     """统计各平台账号数量和状态分布"""
+    remote_summary = {
+        "provider": "",
+        "total": 0,
+        "deleted_error_accounts": 0,
+        "deleted_local_accounts": 0,
+        "error": "",
+    }
+    try:
+        reconcile_summary = _reconcile_chatgpt_local_with_remote(session)
+        remote_summary = {
+            "provider": str(reconcile_summary.get("provider") or ""),
+            "total": int(reconcile_summary.get("remote_total") or 0),
+            "deleted_error_accounts": int(reconcile_summary.get("deleted_error_accounts") or 0),
+            "deleted_local_accounts": int(reconcile_summary.get("deleted_local_accounts") or 0),
+            "error": "",
+        }
+    except Exception as exc:
+        remote_summary["error"] = str(exc)
+
     accounts = session.exec(select(AccountModel)).all()
     platforms: dict = {}
     statuses: dict = {}
     for acc in accounts:
         platforms[acc.platform] = platforms.get(acc.platform, 0) + 1
         statuses[acc.status] = statuses.get(acc.status, 0) + 1
-    return {"total": len(accounts), "by_platform": platforms, "by_status": statuses}
+
+    return {
+        "total": len(accounts),
+        "by_platform": platforms,
+        "by_status": statuses,
+        "remote_summary": remote_summary,
+    }
 
 
 @router.get("/export")

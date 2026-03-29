@@ -174,3 +174,38 @@ def batch_upload_cpa(req: CpaBatchUploadReq,
     }
 
 
+@router.post("/batch-sync-target")
+def batch_sync_target(req: CpaBatchUploadReq,
+                      session: Session = Depends(get_session)):
+    if not req.account_ids:
+        raise HTTPException(400, "账号 ID 列表不能为空")
+
+    unique_ids = list(dict.fromkeys(req.account_ids))
+    results = []
+    success = 0
+
+    from services.external_sync import sync_account, _resolve_chatgpt_sync_provider
+
+    provider = _resolve_chatgpt_sync_provider()
+    for account_id in unique_ids:
+        try:
+            acc = _get_account(account_id, session)
+            sync_results = sync_account(acc, provider=provider)
+            ok = any(bool(item.get("ok")) for item in sync_results)
+            msg = "; ".join(str(item.get("msg") or "") for item in sync_results if item.get("msg")) or "未执行"
+            results.append({"id": account_id, "email": acc.email, "ok": ok, "message": msg})
+            if ok:
+                success += 1
+        except HTTPException as e:
+            results.append({"id": account_id, "email": "", "ok": False, "message": e.detail})
+        except Exception as e:
+            results.append({"id": account_id, "email": "", "ok": False, "message": str(e)})
+
+    return {
+        "provider": provider,
+        "total": len(unique_ids),
+        "success": success,
+        "failed": len(unique_ids) - success,
+        "items": results,
+    }
+

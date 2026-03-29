@@ -6,6 +6,7 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   ReloadOutlined,
+  CloudServerOutlined,
 } from '@ant-design/icons'
 import { apiFetch } from '@/lib/utils'
 
@@ -25,6 +26,7 @@ const STATUS_COLORS: Record<string, string> = {
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const remoteTotal = stats?.remote_summary?.total ?? 0
 
   const load = async () => {
     setLoading(true)
@@ -42,10 +44,16 @@ export default function Dashboard() {
 
   const statCards = [
     {
-      title: '总账号数',
+      title: '本地账号数',
       value: stats?.total ?? 0,
       icon: <UserOutlined style={{ fontSize: 32 }} />,
       color: '#6366f1',
+    },
+    {
+      title: '远端账号数',
+      value: remoteTotal,
+      icon: <CloudServerOutlined style={{ fontSize: 32 }} />,
+      color: '#22c55e',
     },
     {
       title: '试用中',
@@ -81,7 +89,7 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]}>
         {statCards.map(({ title, value, icon, color }) => (
-          <Col xs={24} sm={12} lg={6} key={title}>
+          <Col xs={24} sm={12} xl={4} key={title}>
             <Card>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Statistic title={title} value={value} />
@@ -91,6 +99,14 @@ export default function Dashboard() {
           </Col>
         ))}
       </Row>
+
+      {stats?.remote_summary?.provider && (
+        <div style={{ marginTop: 12, color: '#7a8ba3', fontSize: 12 }}>
+          远端来源：{stats.remote_summary.provider}
+          {stats?.remote_summary?.deleted_error_accounts ? `，本次自动清理异常远端账号 ${stats.remote_summary.deleted_error_accounts} 个` : ''}
+          {stats?.remote_summary?.error ? `，远端统计失败：${stats.remote_summary.error}` : ''}
+        </div>
+      )}
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} lg={12}>

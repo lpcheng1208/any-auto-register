@@ -119,6 +119,14 @@ _static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(_static_dir):
     app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
 
+    @app.get("/favicon.svg", include_in_schema=False)
+    def favicon_file():
+        return FileResponse(os.path.join(_static_dir, "favicon.svg"))
+
+    @app.get("/icons.svg", include_in_schema=False)
+    def icons_file():
+        return FileResponse(os.path.join(_static_dir, "icons.svg"))
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
         return FileResponse(os.path.join(_static_dir, "index.html"))
