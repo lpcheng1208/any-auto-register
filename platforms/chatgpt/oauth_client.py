@@ -302,42 +302,50 @@ class OAuthClient:
         self._log("步骤4: 处理 consent 流程...")
         code = None
         consent_url = continue_url
-        
+
         if consent_url and consent_url.startswith("/"):
             consent_url = f"{self.oauth_issuer}{consent_url}"
-        
+
         if not consent_url and "consent" in page_type:
-            consent_url = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
-        
+            consent_url = self._default_consent_url()
+
+        add_phone_step = self._is_add_phone_step(consent_url, page_type)
+        if add_phone_step:
+            self._log(
+                f"检测到 add_phone 分支，跳过直接跟随当前页面: page={page_type or '-'} url={consent_url[:120] if consent_url else '-'}"
+            )
+
         # 先检查 URL 中是否已经包含 code
         if consent_url:
             code = self._extract_code_from_url(consent_url)
-        
+
         # 跟随 continue_url
-        if not code and consent_url:
+        if not code and consent_url and not add_phone_step:
             self._log("步骤5: 跟随 continue_url 提取 code")
             code, _ = self._oauth_follow_for_code(consent_url, referer=f"{self.oauth_issuer}/log-in/password", user_agent=user_agent, impersonate=impersonate)
-        
+
         # 检查是否需要 workspace/org 选择
         consent_hint = (
-            ("consent" in (consent_url or ""))
+            add_phone_step
+            or ("consent" in (consent_url or ""))
             or ("sign-in-with-chatgpt" in (consent_url or ""))
             or ("workspace" in (consent_url or ""))
             or ("organization" in (consent_url or ""))
             or ("consent" in page_type)
             or ("organization" in page_type)
         )
-        
+
         if not code and consent_hint:
-            if not consent_url:
-                consent_url = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
+            if not consent_url or add_phone_step:
+                consent_url = self._default_consent_url()
+                self._log(f"步骤6: 切换到固定 consent 路径: {consent_url}")
             self._log("步骤6: 执行 workspace/org 选择")
             code = self._oauth_submit_workspace_and_org(consent_url, device_id, user_agent, impersonate)
-        
+
         # 最后回退（带重试机制）
         if not code:
-            fallback_consent = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
-            
+            fallback_consent = self._default_consent_url()
+
             # 尝试最多 3 次
             for retry in range(3):
                 if retry > 0:
@@ -345,11 +353,11 @@ class OAuthClient:
                     time.sleep(0.5)  # 短暂延迟
                 else:
                     self._log("步骤6: 回退 consent 路径重试")
-                
+
                 code = self._oauth_submit_workspace_and_org(fallback_consent, device_id, user_agent, impersonate)
                 if code:
                     break
-                
+
                 code, _ = self._oauth_follow_for_code(fallback_consent, referer=f"{self.oauth_issuer}/log-in/password", user_agent=user_agent, impersonate=impersonate)
                 if code:
                     break
@@ -357,20 +365,28 @@ class OAuthClient:
         if not code:
             self._log("未获取到 authorization code")
             return None
-        
+
         self._log(f"获取到 authorization code: {code[:20]}...")
-        
+
         # 6. 用 code 换取 tokens
         self._log("步骤7: POST /oauth/token")
         tokens = self._exchange_code_for_tokens(code, code_verifier, user_agent, impersonate)
-        
+
         if tokens:
             self._log("✅ OAuth 登录成功")
             return tokens
         else:
             self._log("换取 tokens 失败")
             return None
-    
+
+    def _is_add_phone_step(self, url, page_type):
+        normalized_url = str(url or "").lower()
+        normalized_page = str(page_type or "").lower()
+        return normalized_page == "add_phone" or "add-phone" in normalized_url or "add-phone" in normalized_page
+
+    def _default_consent_url(self):
+        return f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
+
     def _extract_code_from_url(self, url):
         """从 URL 中提取 code"""
         if not url or "code=" not in url:
@@ -928,13 +944,19 @@ class OAuthClient:
             consent_url = f"{self.oauth_issuer}{consent_url}"
 
         if not consent_url and "consent" in page_type:
-            consent_url = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
+            consent_url = self._default_consent_url()
+
+        add_phone_step = self._is_add_phone_step(consent_url, page_type)
+        if add_phone_step:
+            self._log(
+                f"检测到 add_phone 分支，跳过直接跟随当前页面: page={page_type or '-'} url={consent_url[:120] if consent_url else '-'}"
+            )
 
         if consent_url:
             code = self._extract_code_from_url(consent_url)
 
-        if not code and consent_url:
-            self._log("\u6b65\u9aa45: \u8ddf\u968f continue_url \u63d0\u53d6 code")
+        if not code and consent_url and not add_phone_step:
+            self._log("步骤5: 跟随 continue_url 提取 code")
             code, _ = self._oauth_follow_for_code(
                 consent_url,
                 referer=f"{self.oauth_issuer}/email-verification",
@@ -943,7 +965,8 @@ class OAuthClient:
             )
 
         consent_hint = (
-            ("consent" in (consent_url or ""))
+            add_phone_step
+            or ("consent" in (consent_url or ""))
             or ("sign-in-with-chatgpt" in (consent_url or ""))
             or ("workspace" in (consent_url or ""))
             or ("organization" in (consent_url or ""))
@@ -952,14 +975,15 @@ class OAuthClient:
         )
 
         if not code and consent_hint:
-            if not consent_url:
-                consent_url = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
-            self._log("\u6b65\u9aa46: \u6267\u884c workspace/org \u9009\u62e9")
+            if not consent_url or add_phone_step:
+                consent_url = self._default_consent_url()
+                self._log(f"步骤6: 切换到固定 consent 路径: {consent_url}")
+            self._log("步骤6: 执行 workspace/org 选择")
             code = self._oauth_submit_workspace_and_org(consent_url, device_id, user_agent, impersonate)
 
         if not code:
-            fallback_consent = f"{self.oauth_issuer}/sign-in-with-chatgpt/codex/consent"
-            self._log("\u6b65\u9aa46: \u56de\u9000\u5230 consent \u9875\u9762\u91cd\u8bd5")
+            fallback_consent = self._default_consent_url()
+            self._log("步骤6: 回退到 consent 页面重试")
             code = self._oauth_submit_workspace_and_org(fallback_consent, device_id, user_agent, impersonate)
             if not code:
                 code, _ = self._oauth_follow_for_code(
@@ -970,16 +994,16 @@ class OAuthClient:
                 )
 
         if not code:
-            self._log("\u672a\u83b7\u53d6\u5230 authorization code")
+            self._log("未获取到 authorization code")
             return None
 
-        self._log(f"\u83b7\u53d6\u5230 authorization code: {code[:20]}...")
-        self._log("\u6b65\u9aa47: POST /oauth/token")
+        self._log(f"获取到 authorization code: {code[:20]}...")
+        self._log("步骤7: POST /oauth/token")
         tokens = self._exchange_code_for_tokens(code, code_verifier, user_agent, impersonate)
 
         if tokens:
-            self._log("? OAuth \u767b\u5f55\u6210\u529f")
+            self._log("✅ OAuth 登录成功")
             return tokens
         else:
-            self._log("? \u6362\u53d6 tokens \u5931\u8d25")
+            self._log("换取 tokens 失败")
             return None
